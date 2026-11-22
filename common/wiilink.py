@@ -249,8 +249,9 @@ class ShakeDetector:
     PRIMER golpe (la aceleracion con la que arranca el gesto: hacia donde "lanzas" el mando).
     """
 
-    def __init__(self, threshold=1.0, reversals=4, window=0.8, cooldown=1.0):
+    def __init__(self, threshold=1.0, reversals=4, window=0.8, cooldown=1.0, gap=0.4):
         self.threshold, self.reversals, self.window, self.cooldown = threshold, reversals, window, cooldown
+        self.gap = gap        # segundos maximos entre dos cambios de sentido seguidos
         self.lp = None
         self.last_t = None
         self.sign = [0, 0, 0]
@@ -272,7 +273,7 @@ class ShakeDetector:
             return False
         dt = clamp(t - self.last_t, 0.001, 0.1)
         self.last_t = t
-        a = 1.0 - math.exp(-dt / 0.3)
+        a = 1.0 - math.exp(-dt / (0.3 * max(1.0, self.gap / 0.4)))   # agitado lento: media mas lenta
         dyn = [acc[i] - self.lp[i] for i in range(3)]
         for i in range(3):
             self.lp[i] += (acc[i] - self.lp[i]) * a
@@ -285,7 +286,7 @@ class ShakeDetector:
             if abs(v) > self.threshold:
                 s = 1 if v > 0 else -1
                 if s != self.sign[i]:
-                    if self.sign[i] != 0 and t - self.last_rev[i] < 0.4:
+                    if self.sign[i] != 0 and t - self.last_rev[i] < self.gap:
                         self.count[i] += 1
                     else:
                         self.count[i] = 1
@@ -294,7 +295,7 @@ class ShakeDetector:
                     self.last_rev[i] = t
                     self.sign[i] = s
                 self.amp[i] = max(self.amp[i], abs(v))
-            if t - self.last_rev[i] > self.window / 2:
+            if t - self.last_rev[i] > self.gap:
                 self.count[i] = 0
                 self.sign[i] = 0
         cand = [i for i in range(3) if self.count[i] >= self.reversals]

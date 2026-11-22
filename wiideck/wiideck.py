@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-WiiDeck 0.4 - controla la Steam Deck (tambien en Modo Juego) con un Wii Remote Plus a traves de la Dolphin Bar.
+WiiDeck 0.11 - controla la Steam Deck (tambien en Modo Juego) con un Wii Remote Plus a traves de la Dolphin Bar.
 
   * Puntero IR -> raton virtual            * Agitar a izquierda/derecha/arriba/abajo -> lo que quieras (de fabrica L1 / R1)
   * Modos: VERTICAL (apuntando), HORIZONTAL (como un mando de NES; la cruceta hace de stick), NUNCHUK
@@ -28,7 +28,7 @@ for _p in (HERE, os.path.join(HERE, "..", "common")):
 import wiilink as wl  # noqa: E402
 import deckcore as dc  # noqa: E402
 from deckcore import (APP_NAME, VERSION, MODES, MODE_TITLES, INPUTS, ACTION_GROUPS, ACTION_LABELS,  # noqa: E402
-                      POINTER_CHOICES, STICK_CHOICES, MAX_COMBO, split_action, join_actions, profile_ids, profile_title,
+                      POINTER_CHOICES, STICK_CHOICES, MAX_COMBO, CATEGORIES, category_of, split_action, join_actions, profile_ids, profile_title,
                       default_bindings, BUILTIN_PROFILES, MAX_CUSTOM_PROFILES)
 
 BG, PANEL, PANEL2, FG, DIM, ACC, OK, BAD, WARN = "#10161d", "#1b2430", "#263445", "#e6edf3", "#8fa3b8", "#3fa9f5", "#4cd964", "#f55a3f", "#ffd60a"
@@ -89,12 +89,35 @@ def run_gui(svc):
     head = tk.Frame(root, bg=BG)
     head.pack(fill="x", padx=24, pady=(10, 0))
     label(head, "WiiDeck  -  Wiimote Plus para la Steam Deck", F_BIG).pack(side="left")
+    # Botones peligrosos: hay que pulsar varias veces seguidas (cambia el texto cada vez); si pasan 4 s sin pulsar se cancela
+    confirm_state = {}
+
+    def confirm(key, btn, idle_text, steps, action):
+        n = confirm_state.get(key, (0, 0))[0]
+        tok = confirm_state.get(key, (0, 0))[1] + 1
+        if n < len(steps):
+            confirm_state[key] = (n + 1, tok)
+            btn.config(text=steps[n])
+
+            def reset(key=key, tok=tok):
+                st_ = confirm_state.get(key)
+                if st_ and st_[1] == tok:
+                    del confirm_state[key]
+                    btn.config(text=idle_text)
+            root.after(4000, reset)
+            return
+        confirm_state.pop(key, None)
+        btn.config(text=idle_text)
+        action()
+
     master = button(head, "", lambda: ctrl.set_enabled(not cfg["enabled"]), font=("DejaVu Sans", 16, "bold"), width=18, height=2)
     master.pack(side="right")
     ir_btn = button(head, "", lambda: svc.set_option("ir_enabled", not cfg["ir_enabled"]), font=("DejaVu Sans", 12, "bold"), width=14, height=2)
     ir_btn.pack(side="right", padx=8)
-    button(head, "REINICIAR\nTODO", lambda: threading.Thread(target=svc.restart, daemon=True).start(),
-           font=("DejaVu Sans", 12, "bold"), width=10, height=2).pack(side="right")
+    restart_btn = button(head, "REINICIAR\nTODO", lambda: confirm("restart", restart_btn, "REINICIAR\nTODO", ["¿SEGURO?\nOTRA VEZ"],
+                         lambda: threading.Thread(target=svc.restart, daemon=True).start()),
+                         font=("DejaVu Sans", 12, "bold"), width=10, height=2)
+    restart_btn.pack(side="right")
     status = label(root, "", F_SMALL, DIM)
     status.pack(fill="x", padx=24)
     banner = tk.Label(root, text="", font=F_SMALL, fg=WARN, bg=BG, anchor="w", justify="left", wraplength=1200)
@@ -189,7 +212,9 @@ def run_gui(svc):
         b = button(row2, MODE_TITLES[m], lambda m=m: set_edit(mode=m), font=("DejaVu Sans", 12, "bold"), width=11)
         b.pack(side="left", padx=2)
         em_buttons[m] = b
-    button(row2, "Restaurar este modo", lambda: restore_draft(), font=("DejaVu Sans", 12), width=19).pack(side="right")
+    restore_btn = button(row2, "Restaurar este modo", lambda: confirm("restore", restore_btn, "Restaurar este modo", ["¿SEGURO? OTRA VEZ"], restore_draft),
+                         font=("DejaVu Sans", 12), width=19)
+    restore_btn.pack(side="right")
     del_btn = button(row2, "Borrar perfil", lambda: delete_profile(), font=("DejaVu Sans", 12), width=17, fg=BAD)
     note = label(bp, "", F_SMALL, DIM)
     note.pack(fill="x")
@@ -231,16 +256,17 @@ def run_gui(svc):
         if mode:
             edit["mode"] = mode
         edit["confirm"] = None
+        for k in [k for k in confirm_state if k.startswith("delete:")]:
+            del confirm_state[k]
         close_overlay()
         refresh_bindings(force=True)
 
     def delete_profile():
         if edit["profile"] in BUILTIN_PROFILES:
             return
-        if edit["confirm"] != edit["profile"]:
-            edit["confirm"] = edit["profile"]
-            del_btn.config(text="¿SEGURO? OTRA VEZ")
-            return
+        confirm("delete:" + edit["profile"], del_btn, "Borrar perfil", ["¿SEGURO? OTRA VEZ", "ULTIMA VEZ: BORRAR"], do_delete_profile)
+
+    def do_delete_profile():
         for k in [k for k in drafts if k[0] == edit["profile"]]:
             del drafts[k]
         ctrl.delete_profile(edit["profile"])
@@ -280,7 +306,7 @@ def run_gui(svc):
     def current_value(name):
         return drafts.get((edit["profile"], edit["mode"], name), saved_value(name))
 
-    def open_picker(name, slot=0):
+    def open_picker(name, slot=0, cat=None):
         fr = new_overlay()
         value = current_value(name)
         simple = name in ("Pointer", "NunStick")
@@ -314,8 +340,18 @@ def run_gui(svc):
             if slot < len(parts):
                 button(sl, "Quitar este", lambda: assign_slot(name, parts, slot, "none"), font=("DejaVu Sans", 12), width=12, height=2,
                        fg=BAD).pack(side="right")
-            groups = ACTION_GROUPS
             current = parts[slot] if slot < len(parts) else None
+            if cat is None:
+                cat = category_of(current) if current else CATEGORIES[0][0]
+            cr = tk.Frame(fr, bg=BG)
+            cr.pack(fill="x", padx=24, pady=(6, 2))
+            label(cr, "Tipo:", F_SMALL, DIM).pack(side="left", padx=(0, 8))
+            for cname, _g in CATEGORIES:
+                cb = button(cr, cname.upper(), lambda c=cname: open_picker(name, slot, c), font=("DejaVu Sans", 13, "bold"), width=12, height=2)
+                sel(cb, cname == cat)
+                cb.pack(side="left", padx=2)
+            wanted = dict(CATEGORIES)[cat]
+            groups = [(g, items) for g, items in ACTION_GROUPS if g in wanted]
         area = tk.Frame(fr, bg=BG)
         area.pack(fill="both", expand=True, padx=24, pady=4)
         for gtitle, items in groups:
@@ -326,19 +362,19 @@ def run_gui(svc):
                 if simple:
                     cmd = lambda a=aid: (assign(name, a), close_overlay())
                 else:
-                    cmd = lambda a=aid: assign_slot(name, parts, slot, a)
+                    cmd = lambda a=aid: assign_slot(name, parts, slot, a, cat)
                 b = button(g, text, cmd, font=("DejaVu Sans", 12, "bold"), width=17, height=1)
                 sel(b, aid == current)
                 b.grid(row=k // 6, column=k % 6, padx=2, pady=2, sticky="we")
 
-    def assign_slot(name, parts, slot, action):
+    def assign_slot(name, parts, slot, action, cat=None):
         new = list(parts)
         if slot < len(new):
             new[slot] = action
         else:
             new.append(action)
         assign(name, join_actions(new))
-        open_picker(name, slot)
+        open_picker(name, slot, cat)
 
     # ---- perfiles nuevos: nombre con teclado en pantalla (o el del teclado fisico)
     def open_name_dialog(text="", upper=False):
@@ -347,13 +383,14 @@ def run_gui(svc):
         hd.pack(fill="x", padx=24, pady=(12, 4))
         label(hd, "Nuevo perfil", F_BIG).pack(side="left")
         button(hd, "CANCELAR", close_overlay, font=("DejaVu Sans", 15, "bold"), width=12, height=2, bg=BAD, fg="#08111a").pack(side="right")
-        label(fr, "Empieza en blanco: todos los botones en 'Nada'. Ponle nombre y luego asigna lo que quieras en BOTONES.", F_SMALL, DIM).pack(
-            fill="x", padx=24)
+        src = edit["profile"] if edit["profile"] in profile_ids(cfg) else "menus"
+        label(fr, "Sera una COPIA de \"%s\" (el perfil que estas editando), con todos sus botones. Ponle nombre y luego cambia lo que quieras en BOTONES." % profile_title(cfg, src),
+              F_SMALL, DIM).pack(fill="x", padx=24)
         tk.Label(fr, text=(text or "") + "_", font=("DejaVu Sans", 26, "bold"), fg=FG, bg=PANEL, anchor="w", padx=14, pady=10).pack(
             fill="x", padx=24, pady=10)
 
         def create():
-            pid = ctrl.create_profile(text)
+            pid = ctrl.create_profile(text, src)
             if pid:
                 edit["profile"], edit["confirm"] = pid, None
                 close_overlay()
@@ -485,7 +522,8 @@ def run_gui(svc):
         if edit["profile"] in BUILTIN_PROFILES:
             del_btn.pack_forget()
         else:
-            del_btn.config(text="¿SEGURO? OTRA VEZ" if edit["confirm"] == edit["profile"] else "Borrar perfil")
+            if not any(k.startswith("delete:") for k in confirm_state):
+                del_btn.config(text="Borrar perfil")
             del_btn.pack(side="right", padx=6)
         live = "  (es lo que esta activo ahora)" if (edit["profile"], edit["mode"]) == (ctrl.profile, ctrl.mode) else ""
         blank = "  Perfil en blanco: asigna lo que quieras." if edit["profile"] not in BUILTIN_PROFILES else ""
@@ -519,16 +557,36 @@ def run_gui(svc):
     sl.pack(fill="x")
     slider(sl, "Velocidad del puntero (px/grado)", "px_per_deg", 10, 150, 1)
     slider(sl, "Suavizado (menos = mas suave)", "smooth_min_cut", 0.3, 6, 0.1)
-    slider(sl, "Fuerza del agitado (g, menos = mas facil)", "shake_threshold", 0.3, 2.5, 0.05)
+    slider(sl, "Fuerza del agitado (g, menos = mas suave)", "shake_threshold", 0.08, 2.5, 0.02)
+    sl_s = tk.Frame(mv, bg=BG)
+    sl_s.pack(fill="x")
+    slider(sl_s, "Cambios de sentido para agitar (2 = ida y vuelta)", "shake_reversals", 1, 6, 1)
+    slider(sl_s, "Tiempo entre cambios (s, mas = agitar mas lento)", "shake_gap", 0.2, 1.2, 0.05)
     checks(mv, (("shake_enabled", "Detectar agitado"), ("shake_flip_x", "Invertir izquierda/derecha del agitado"),
                 ("shake_flip_y", "Invertir arriba/abajo"), ("invert_x", "Invertir puntero X"), ("invert_y", "Invertir puntero Y")))
 
     label(mv, "GIROSCOPIO Y MOVIMIENTO PARA EMULADORES", F_SMALL, ACC).pack(anchor="w", pady=(8, 0))
     checks(mv, (("gyro_enabled", "Giroscopio activo (MotionPlus)"), ("dsu_enabled", "Enviar movimiento al emulador (DSU)"),
-                ("gyro_stick", "Giroscopio -> stick derecho")))
+                ("gyro_stick", "Giroscopio -> stick derecho"),
+                ("gyro_from_accel", "Giro estimado con el acelerometro si no hay MotionPlus (modo Nunchuk)"),
+                ("dsu_mirror", "Copiar el movimiento tambien al pad 1 de DSU (2.o sensor del emulador)")))
     sl2 = tk.Frame(mv, bg=BG)
     sl2.pack(fill="x", pady=(2, 0))
     slider(sl2, "Sensibilidad del giroscopio -> stick", "gyro_stick_gain", 0.3, 4.0, 0.1)
+    slider(sl2, "Zona muerta del giro (grados/s; sube si deriva)", "gyro_deadzone", 0, 8, 0.5)
+    slider(sl2, "Ganancia del acelerometro para el emulador", "dsu_accel_gain", 0.5, 4, 0.1)
+    sl_e = tk.Frame(mv, bg=BG)
+    sl_e.pack(fill="x")
+    label(sl_e, "Sacudida sintetica al emulador (asigna 'Sacudida al emulador: ...' en Programa)", F_SMALL, DIM).pack(anchor="w")
+    slider(sl_e, "Fuerza (g)", "eden_shake_amp", 1, 10, 0.5)
+    slider(sl_e, "Giro que acompana (grados/s)", "eden_shake_gyro", 0, 2000, 50)
+    slider(sl_e, "Vaiven (Hz)", "eden_shake_hz", 2, 20, 1)
+    slider(sl_e, "Vaivenes", "eden_shake_cycles", 1, 6, 1)
+    tb = tk.Frame(mv, bg=BG)
+    tb.pack(fill="x", pady=2)
+    for dname, dkey in (("ARRIBA", "up"), ("ABAJO", "down"), ("IZQ.", "left"), ("DER.", "right"), ("ADELANTE", "forward"), ("ATRAS", "back")):
+        button(tb, "PROBAR " + dname, lambda k=dkey: ctrl.eden_shake(k), font=("DejaVu Sans", 11, "bold"), width=14).pack(side="left", padx=2)
+    button(tb, "PRUEBA CONTINUA 5 s (arriba)", lambda: ctrl.eden_shake("up", 5.0), font=("DejaVu Sans", 11, "bold"), width=28).pack(side="left", padx=6)
     cal = tk.Frame(sl2, bg=BG)
     cal.pack(side="left", padx=10, anchor="s")
     button(cal, "CALIBRAR GIROSCOPIO\n(deja el mando quieto)", lambda: ctrl.calibrate_gyro(), font=("DejaVu Sans", 12, "bold"), width=24, height=2).pack()
@@ -610,9 +668,9 @@ def run_gui(svc):
                 dsu_state = "apagado" if not st["dsu_enabled"] else "SIN PUERTO"
             mo = st["motion"]
             dsu_lbl.config(text="Servidor DSU: %s\nEmuladores conectados: %d    Paquetes enviados: %d\n"
-                                "Lo que se envia ahora ->  Acel (g): %6.2f %6.2f %6.2f     Giro (grados/s): %7.1f %7.1f %7.1f" % (
+                                "Lo que se envia ahora ->  Acel (g): %6.2f %6.2f %6.2f     Giro (grados/s): %7.1f %7.1f %7.1f     Pico de aceleracion: %.1f g" % (
                 dsu_state, st["dsu_clients"], st["dsu_sent"], mo["acc"][0], mo["acc"][1], mo["acc"][2],
-                mo["gyro"][0], mo["gyro"][1], mo["gyro"][2]))
+                mo["gyro"][0], mo["gyro"][1], mo["gyro"][2], mo["peak"]))
             refresh_bindings()
         except Exception as e:  # la ventana nunca debe romper el control
             log.event("APP", "ERROR", "ventana: %r" % e)

@@ -134,9 +134,13 @@ class Plugin:
             self.svc.ctrl.set_profile(profile)
         return self._ok()
 
-    async def create_profile(self, name):
-        """Perfil nuevo EN BLANCO. Devuelve su id (o None si el nombre no vale / hay demasiados)."""
-        return self.svc.ctrl.create_profile(name) if self._ok() else None
+    async def create_profile(self, name, copy_from=None):
+        """Perfil nuevo: COPIA del indicado en copy_from (o en blanco si no se da). Devuelve su id (o None si el nombre no vale / hay demasiados)."""
+        return self.svc.ctrl.create_profile(name, copy_from or None) if self._ok() else None
+
+    async def eden_shake(self, direction, repeat=0.0):
+        """Boton "Probar sacudida": lanza la sacudida sintetica hacia el emulador (repeat > 0: la repite ese numero de segundos)."""
+        return bool(self._ok() and self.svc.ctrl.eden_shake(direction, float(repeat or 0.0)))
 
     async def set_quick_profiles(self, ids):
         """Perfiles por los que rotan + y - en el mando."""

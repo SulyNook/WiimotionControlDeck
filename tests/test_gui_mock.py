@@ -9,6 +9,7 @@ class FakeWidget:
         if name.startswith("__"): raise AttributeError(name)
         def f(*a, **k):
             self.calls.append((name, a, k))
+            if name in ("config", "configure"): self.k.update(k)
             if name == "winfo_width": return 1000
             if name == "winfo_height": return 700
             if name == "focus_get": return None
@@ -94,13 +95,20 @@ a_btn = find(lambda w: cmd(w) and getattr(cmd(w), "__defaults__", None) == ("A",
 assert len(a_btn) == 1, "no se encuentra el boton de asignacion de A"
 n0 = len(ALL)
 cmd(a_btn[0])()
+assert not [w for w in ALL[n0:] if w.k.get("text") == "Intro"], "las teclas no deben verse hasta elegir el tipo TECLADO"
+cats = [w.k.get("text") for w in ALL[n0:] if w.k.get("text") in ("MANDO", "TECLADO", "RATON", "PROGRAMA")]
+assert cats == ["MANDO", "TECLADO", "RATON", "PROGRAMA"], cats
+n0 = len(ALL)
+cmd([w for w in ALL if w.k.get("text") == "TECLADO" and cmd(w)][-1])()
 intro = [w for w in ALL[n0:] if w.k.get("text") == "Intro"]
 assert len(intro) == 1, "el selector no ofrece 'Intro'"
+assert any(w.k.get("text") == "Q" for w in ALL[n0:]) and any(w.k.get("text") == "F12" for w in ALL[n0:]), "faltan letras o F1-F12"
 cmd(intro[0])()
 assert "juego" not in svc.cfg["profiles"], "un cambio NO debe guardarse hasta APLICAR: %r" % svc.cfg["profiles"]
 assert svc.bindings_view("vertical", "juego")["inputs"][1]["value"] == "pad:A", "...ni aplicarse"
 n0 = len(ALL)
 cmd([w for w in ALL if cmd(w) and getattr(cmd(w), "__defaults__", None) == ("B",)][-1])()
+cmd([w for w in ALL if w.k.get("text") == "TECLADO" and cmd(w)][-1])()
 cmd([w for w in ALL[n0:] if w.k.get("text") == "Espacio"][-1])()           # un segundo cambio antes de aplicar
 assert "juego" not in svc.cfg["profiles"]
 cmd([w for w in ALL if w.k.get("text") == "APLICAR" and cmd(w)][-1])()
@@ -109,6 +117,7 @@ assert svc.cfg["profiles"]["juego"]["vertical"]["B"] == "key:SPACE", svc.cfg["pr
 print("WiiDeck: editor de botones OK (varios cambios acumulados, se guardan juntos con APLICAR)")
 # DESCARTAR tira los cambios pendientes
 cmd([w for w in ALL if cmd(w) and getattr(cmd(w), "__defaults__", None) == ("Two",)][-1])()
+cmd([w for w in ALL if w.k.get("text") == "TECLADO" and cmd(w)][-1])()
 cmd([w for w in ALL if w.k.get("text") == "Tab" and cmd(w)][-1])()
 cmd([w for w in ALL if w.k.get("text") == "DESCARTAR" and cmd(w)][-1])()
 cmd([w for w in ALL if w.k.get("text") == "APLICAR" and cmd(w)][-1])()
@@ -126,7 +135,7 @@ assert svc.cfg["profiles"]["juego"]["vertical"]["Pointer"] == "none"
 # la sacudida del Nunchuk se puede asignar
 assert find(lambda w: cmd(w) and getattr(cmd(w), "__defaults__", None) == ("NunShake",)), "falta Nunchuk: agitar en el editor"
 # interruptor del puntero IR y boton de reinicio en la cabecera
-ir = find(lambda w: cmd(w) and w.k.get("width") == 14 and w.k.get("height") == 2 and w.k.get("text") == "")
+ir = find(lambda w: cmd(w) and w.k.get("width") == 14 and w.k.get("height") == 2 and str(w.k.get("text", "")).startswith(("", "PUNTERO")) and "REINICIAR" not in str(w.k.get("text")) and "SEGURO" not in str(w.k.get("text")))
 assert ir, "falta el boton del puntero IR"
 cmd(ir[0])(); assert svc.cfg["ir_enabled"] is False
 cmd(ir[0])(); assert svc.cfg["ir_enabled"] is True
@@ -167,9 +176,10 @@ for ch in "zelda":
 click("CREAR PERFIL")
 assert list(svc.cfg["custom_profiles"].values()) == ["mi zelda"], svc.cfg["custom_profiles"]
 pid = list(svc.cfg["custom_profiles"])[0]
-blank = dc.effective_bindings(svc.cfg, pid, "vertical")
-assert all(v == "none" for v in blank.values())
-print("WiiDeck: '+ Añadir perfil' con teclado en pantalla OK (perfil en blanco)")
+for m in dc.MODES:
+    assert dc.effective_bindings(svc.cfg, pid, m) == dc.effective_bindings(svc.cfg, "juego", m), "el perfil nuevo debe ser copia del que se edita (Juegos)"
+assert dc.effective_bindings(svc.cfg, pid, "vertical")["A"] == "key:ENTER", "...incluidos los cambios ya aplicados"
+print("WiiDeck: '+ Añadir perfil' con teclado en pantalla OK (copia del perfil que se edita)")
 tick()
 assert any(w.k.get("text") == "MI ZELDA" for w in ALL), "el perfil nuevo no sale en Inicio"
 click("MI ZELDA")
@@ -177,6 +187,7 @@ assert svc.ctrl.profile == pid
 click("Vertical")          # el editor se quedo en Horizontal mas arriba
 # huecos "+": A, luego B, X, Y (maximo 4)
 cmd([w for w in ALL if cmd(w) and getattr(cmd(w), "__defaults__", None) == ("A",)][-1])()
+click("MANDO")
 click("B")
 n0 = len(ALL); labs = labels_now(n0)
 click("+  añadir"); click("X")
@@ -186,19 +197,27 @@ n0 = len(ALL)
 cmd([w for w in ALL if cmd(w) and getattr(cmd(w), "__defaults__", None) == ("A",)][-1])()
 assert "+  añadir" not in labels_now(n0), "con 4 botones ya no debe ofrecer otro hueco"
 click("Quitar este")
-assert "A" not in svc.cfg.get("profiles", {}).get(pid, {}).get("vertical", {}), "nada se guarda hasta APLICAR"
+assert svc.cfg["profiles"][pid]["vertical"]["A"] == "key:ENTER", "nada se guarda hasta APLICAR (sigue la copia)"
 click("APLICAR")
 assert svc.cfg["profiles"][pid]["vertical"]["A"] == "pad:X+pad:Y+pad:TL", svc.cfg["profiles"][pid]   # se quito el 1.er hueco (B)
 print("WiiDeck: huecos '+' (A + B + ... hasta 4) y 'Quitar este' OK")
 # agitar: 4 direcciones asignables
 cmd([w for w in ALL if cmd(w) and getattr(cmd(w), "__defaults__", None) == ("ShakeUp",)][-1])()
-click("Esc"); click("APLICAR"); assert svc.cfg["profiles"][pid]["vertical"]["ShakeUp"] == "key:ESC"
+click("TECLADO"); click("Esc"); click("APLICAR"); assert svc.cfg["profiles"][pid]["vertical"]["ShakeUp"] == "key:ESC"
 labs_inputs = [i["input"] for i in svc.bindings_view("vertical", pid)["inputs"]]
 assert all(k in labs_inputs for k in dc.SHAKE_INPUTS)
 # los dos perfiles de fabrica no se pueden borrar y el propio si (con confirmacion)
 tick()
 click("Borrar perfil"); assert pid in svc.cfg["custom_profiles"], "debe pedir confirmacion"
-click("Borrar perfil"); assert pid not in svc.cfg["custom_profiles"] and svc.ctrl.profile == "menus"
+click("¿SEGURO? OTRA VEZ"); assert pid in svc.cfg["custom_profiles"], "y una segunda (doble confirmacion)"
+click("ULTIMA VEZ: BORRAR"); assert pid not in svc.cfg["custom_profiles"] and svc.ctrl.profile == "menus"
+# reiniciar todo y restaurar tambien piden confirmar; si se deja pasar el tiempo se cancela
+n_restart = []
+svc.restart = lambda: n_restart.append(1)
+click("REINICIAR\nTODO"); time.sleep(0.05); assert not n_restart, "el primer toque solo pide confirmacion"
+click("¿SEGURO?\nOTRA VEZ"); time.sleep(0.1); assert n_restart == [1], "el segundo reinicia"
+click("Restaurar este modo")
+assert [w for w in ALL if w.k.get("text") == "¿SEGURO? OTRA VEZ" and cmd(w)], "Restaurar pide confirmar antes de hacer nada"
 print("WiiDeck: agitar x4 y borrar perfil (con confirmacion) OK")
 # pestaña de movimiento: puerto DSU
 def port_btn(txt):

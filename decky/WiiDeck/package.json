@@ -1,6 +1,6 @@
 {
   "name": "wiideck",
-  "version": "0.2.0",
+  "version": "0.11.0",
   "description": "Controla la Steam Deck con un Wii Remote Plus (Dolphin Bar): puntero, gamepad virtual, giroscopio.",
   "type": "module",
   "scripts": {

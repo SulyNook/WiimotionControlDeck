@@ -296,7 +296,9 @@ check("config con perfil propio se carga", cfg["profile"] == "p1" and dc.profile
 json.dump({"custom_profiles": {"p1": "Zelda"}, "profile": "p7"}, open(cfgfile, "w"))
 check("perfil activo desaparecido -> Menus", dc.load_config()["profile"] == "menus")
 json.dump({"dsu_port": 26760}, open(cfgfile, "w"))
-check("migracion: el puerto DSU 26760 antiguo pasa a 26761", dc.load_config()["dsu_port"] == 26761)
+check("migracion: el puerto DSU 26760 sigue siendo 26760", dc.load_config()["dsu_port"] == 26760)
+json.dump({"dsu_port": 26761, "config_version": 3}, open(cfgfile, "w"))
+check("migracion: el 26761 de la v0.4-0.6 vuelve al 26760 (el de los emuladores)", dc.load_config()["dsu_port"] == 26760)
 json.dump({"dsu_port": 26770, "config_version": 3}, open(cfgfile, "w"))
 check("un puerto elegido a mano se respeta", dc.load_config()["dsu_port"] == 26770)
 dc.CONFIG_PATH = "/nonexistent/config.json"
@@ -546,7 +548,7 @@ names = {i["input"]: i for i in view["inputs"]}
 check("bindings_view lista todas las entradas", set(names) == set(dict(dc.INPUTS)))
 check("la cruceta horizontal aparece como stick", names["Up"]["value"] == "lstick:left", names["Up"]["value"])
 check("Pointer/NunStick traen sus propias opciones", names["Pointer"]["options"] and names["NunStick"]["options"] and names["A"]["options"] is None)
-check("hay acciones para botones, sticks, raton, teclado y programa", {a["group"] for a in view["actions"]} >= {"Botones", "Stick izquierdo", "Raton", "Teclado", "Programa"})
+check("hay acciones para botones, sticks, raton, teclado y programa", {a["cat"] for a in view["actions"]} == {"Mando", "Teclado", "Raton", "Programa"} and view["categories"] == ["Mando", "Teclado", "Raton", "Programa"])
 st = svc.status()
 check("status() es serializable a JSON", __import__("json").dumps(st) and st["profile"] in dc.PROFILES)
 
@@ -580,6 +582,206 @@ c.on_notify = lambda t, b: 1 / 0
 c.set_mode("vertical")
 check("un fallo en la notificacion no rompe el cambio", c.mode == "vertical")
 check("set_option no toca quick_profiles", c.set_option("quick_profiles", ["x"]) is False)
+
+
+print("DSU en varios puertos, giro estimado y agitado suave")
+srv = dc.DSUServer(26905, None, extra_ports=(26906,)); srv.start()
+got = []
+srv.on_client = lambda: got.append(1)
+cl = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); cl.settimeout(1.0)
+cl.sendto(creq(dc.MSG_DATA, bytes([0, 0]) + bytes(6)), ("127.0.0.1", 26906)); time.sleep(0.2)
+srv.push((0, 0, 1.0), (1.0, 2.0, 3.0), {}, 1_000_000)
+r, frm = cl.recvfrom(256)
+check("escucha tambien en el puerto extra y contesta desde el mismo", valid(r) and frm[1] == 26906 and srv.client_count == 1, frm)
+check("avisa de que se ha conectado un emulador", got == [1], got)
+cl.sendto(creq(dc.MSG_VERSION), ("127.0.0.1", 26905)); r, frm = cl.recvfrom(256)
+check("y en el principal", valid(r) and frm[1] == 26905, frm)
+busy = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); busy.bind(("127.0.0.1", 26908))
+srv.stop(); srv = dc.DSUServer(26907, None, extra_ports=(26908,)); check("un puerto extra ocupado no impide arrancar", srv.start() and srv.extra_socks == [])
+srv.stop(); busy.close(); cl.close()
+
+ag = dc.AccGyro()
+out = (0, 0, 0)
+for i in range(100):
+    out = ag.update((0.0, 0.0, 1.0), i * 0.01)
+check("quieto: giro estimado 0", max(abs(v) for v in out) < 1.0, out)
+ag = dc.AccGyro(); w = 60.0
+for i in range(100):
+    th = math.radians(w * i * 0.01)
+    out = ag.update((0.0, math.sin(th), math.cos(th)), i * 0.01)
+check("cabeceo arriba a 60 grados/s -> eje x ~ +60", 45 < out[0] < 75 and abs(out[1]) < 8 and abs(out[2]) < 8, out)
+ag = dc.AccGyro()
+for i in range(100):
+    th = math.radians(w * i * 0.01)
+    out = ag.update((-math.sin(th), 0.0, math.cos(th)), i * 0.01)
+check("alabeo a la derecha a 60 grados/s -> eje y ~ +60", 45 < out[1] < 75 and abs(out[0]) < 8, out)
+for i in range(20):
+    out = ag.update((0.0, 0.0, 3.0), 2.0 + i * 0.01)
+check("con un golpe (3 g) el estimado se apaga", max(abs(v) for v in out) < 1.0, out)
+
+c, pad, mouse, kbd = new("nunchuk", "juego"); wm = FakeWm(); wm.use_mp = False
+t = feed(c, wm, [make_report()] * 50)
+big = 0.0
+for i in range(120):
+    th = math.radians(80 * i * 0.006)
+    raw = (128, int(round(128 - 26 * math.sin(th))), int(round(128 + 26 * math.cos(th))))
+    t = feed(c, wm, [make_report(acc=raw)], t)
+    big = max(big, max(abs(v) for v in c.states[0].dsu_gyro))
+check("modo Nunchuk (sin MotionPlus): el DSU recibe giro estimado", big > 25, big)
+c, pad, mouse, kbd = new("nunchuk", "juego"); c.cfg["gyro_from_accel"] = False; wm = FakeWm(); wm.use_mp = False
+t = feed(c, wm, [make_report()] * 50)
+big = 0.0
+for i in range(120):
+    th = math.radians(80 * i * 0.006)
+    raw = (128, int(round(128 - 26 * math.sin(th))), int(round(128 + 26 * math.cos(th))))
+    t = feed(c, wm, [make_report(acc=raw)], t)
+    big = max(big, max(abs(v) for v in c.states[0].dsu_gyro))
+check("...y con la opcion apagada el giro es 0", big == 0.0, big)
+
+
+def wave(det, amp, hz, secs=3.0):
+    fired = 0
+    for i in range(int(secs / 0.006)):
+        if det.update(i * 0.006, (amp * math.sin(2 * math.pi * hz * i * 0.006), 0.0, 1.0)):
+            fired += 1
+    return fired
+
+
+check("agitado suave (0,3 g): con la fuerza por defecto no salta", wave(wl.ShakeDetector(0.55, 3), 0.3, 2.0) == 0)
+check("...y bajando la fuerza (0,1 g) si", wave(wl.ShakeDetector(0.1, 3), 0.3, 2.0) >= 1)
+check("agitado lento (1 Hz): con 0,4 s entre cambios no salta", wave(wl.ShakeDetector(0.3, 3), 0.9, 1.0) == 0)
+check("...y con 0,8 s si", wave(wl.ShakeDetector(0.3, 3, gap=0.8), 0.9, 1.0) >= 1)
+check("2 cambios de sentido bastan para agitar con 1 Hz y 0,8 s", wave(wl.ShakeDetector(0.3, 2, gap=0.8), 0.9, 1.0) >= 1)
+c, pad, mouse, kbd = new("vertical", "juego")
+c.set_option("shake_gap", 0.9); c.set_option("shake_threshold", 0.12)
+rs = c.state_for(FakeWm())
+check("set_option llega al detector de la mano y al del Nunchuk", rs.shake.gap == 0.9 and rs.nun_shake.gap == 0.9 and rs.nun_shake.threshold == 0.12, (rs.shake.gap, rs.nun_shake.threshold))
+
+
+print("v0.9: perfil copia, teclas, zona muerta del giro")
+c, pad, mouse, kbd = new("vertical", "juego")
+c.set_binding("A", "key:ENTER", "vertical", "juego")
+c.set_binding("B", "pad:X+key:Q", "horizontal", "juego")
+pid = c.create_profile("Copia", "juego")
+for m in dc.MODES:
+    check("copia de Juegos en el modo %s" % m, dc.effective_bindings(c.cfg, pid, m) == dc.effective_bindings(c.cfg, "juego", m))
+c.set_binding("A", "pad:Y", "vertical", pid)
+check("cambiar la copia no toca el original", dc.effective_bindings(c.cfg, "juego", "vertical")["A"] == "key:ENTER")
+pid2 = c.create_profile("Copia de menus", "menus")
+check("copiar un perfil de fabrica copia sus valores de fabrica (A = clic)", dc.effective_bindings(c.cfg, pid2, "vertical")["A"] == "mouse:LEFT")
+pid3 = c.create_profile("Vacio")
+check("sin copy_from sigue siendo en blanco", all(v == "none" for v in dc.effective_bindings(c.cfg, pid3, "vertical").values()))
+check("copy_from desconocido tambien", all(v == "none" for v in dc.effective_bindings(c.cfg, c.create_profile("X", "nope"), "vertical").values()))
+ids = [i for g, it in dc.ACTION_GROUPS for i, _ in it if i.startswith("key:")]
+check("todas las teclas del editor existen y son validas", all(i[4:] in dc.KEYS for i in ids) and all(dc.valid_value("A", i) for i in ids) and len(ids) >= 70, len(ids))
+check("los codigos de tecla no se repiten", len(set(dc.KEYS.values())) == len(dc.KEYS))
+check("category_of", dc.category_of("pad:A") == "Mando" and dc.category_of("key:Q") == "Teclado" and dc.category_of("mouse:LEFT") == "Raton" and dc.category_of("app:open_qam") == "Programa")
+c, pad, mouse, kbd = new("vertical", "juego"); wm = FakeWm()
+c.set_binding("A", "key:Q+key:LSHIFT", "vertical", "juego")
+t = tap(c, wm, wl.BTN_A, 100.0)
+check("A = Shift + Q pulsa las dos teclas", kbd.where(dc.EV_KEY, dc.KEYS["Q"]) == [1, 0] and kbd.where(dc.EV_KEY, dc.KEYS["LSHIFT"]) == [1, 0])
+
+def gyro_out(dz, rate, gain=1.0):
+    c, pad, mouse, kbd = new("vertical", "juego"); c.cfg["gyro_deadzone"] = dz; c.cfg["dsu_accel_gain"] = gain
+    wm = FakeWm(); wm.use_mp = True
+    rs = c.state_for(wm); rs.gyro_dps = (0.0, 0.0, rate); rs.acc_body = (0.0, 0.0, 1.0)
+    c._motion(rs, wm, 1.0, True)
+    return rs.dsu_gyro, rs.dsu_acc
+g, a = gyro_out(2.0, 1.5)
+check("zona muerta: un giro de 1,5 grados/s (deriva) se envia como 0", all(abs(v) < 1e-9 for v in g), g)
+g, a = gyro_out(2.0, 10.0)
+check("...y uno real de 10 grados/s llega recortado 2 (suave, sin salto)", abs(max(g, key=abs)) == 8.0, g)
+g, a = gyro_out(0.0, 1.5)
+check("con la zona muerta a 0 llega entero", abs(max(g, key=abs)) == 1.5, g)
+g, a = gyro_out(2.0, 0.0, gain=2.0)
+check("la ganancia del acelerometro multiplica lo que se envia", abs(max(a, key=abs) - 2.0) < 1e-9, a)
+c, pad, mouse, kbd = new("vertical", "juego"); wm = FakeWm()
+t = feed(c, wm, [make_report(acc=(128, 128, 154))] * 5)
+t = feed(c, wm, [make_report(acc=(128, 128, 154 + 52))] * 3, t)
+check("el pico de aceleracion queda registrado (diagnostico)", c.states[0].acc_peak > 2.0, c.states[0].acc_peak)
+
+
+print("v0.10: sacudida sintetica al emulador")
+def run_pulse(direction, amp=5.0, hz=8.0, cycles=2):
+    c, pad, mouse, kbd = new("vertical", "juego"); wm = FakeWm(); wm.use_mp = True
+    c.cfg["eden_shake_amp"], c.cfg["eden_shake_hz"], c.cfg["eden_shake_cycles"] = amp, hz, cycles
+    c.set_binding("ShakeRight", "app:eden_shake_" + direction, "vertical", "juego")
+    t = feed(c, wm, [make_report()] * 30)
+    rs = c.states[0]
+    base = rs.dsu_acc
+    c.eden_shake(direction)
+    seen = []
+    for i in range(80):
+        t = feed(c, wm, [make_report()], t)
+        seen.append(tuple(rs.dsu_acc))
+    return base, seen, c
+base, seen, c = run_pulse("up")
+peak = max(max(abs(v) for v in a) for a in seen)
+check("la sacudida hacia arriba sube la aceleracion enviada hasta ~5 g", 4.0 < peak < 6.5, peak)
+check("...y acaba sola (vuelve al valor en reposo)", max(abs(seen[-1][i] - base[i]) for i in range(3)) < 0.2, (seen[-1], base))
+check("...dura unos 0,25 s (2 vaivenes a 8 Hz): ~40 informes de 6 ms", 25 <= sum(1 for a in seen if max(abs(a[i] - base[i]) for i in range(3)) > 0.3) <= 45)
+xs = {}
+for d in ("up", "left", "forward"):
+    b, sn, _ = run_pulse(d)
+    xs[d] = max(range(3), key=lambda i: max(abs(a[i] - b[i]) for a in sn))
+check("cada direccion mueve un eje distinto", len(set(xs.values())) == 3, xs)
+b, sn, _ = run_pulse("up", amp=9.0)
+check("la fuerza es ajustable", max(max(abs(v) for v in a) for a in sn) > 8.0)
+check("direccion desconocida: no hace nada", run_pulse("up")[2].eden_shake("arriba-izq") is False)
+c, pad, mouse, kbd = new("vertical", "juego")
+c._app("eden_shake_back")
+check("la accion 'Programa' lanza el pulso", c._eden_pulse is not None)
+c.cfg["notify_enabled"] = False
+got = []; c.on_notify = lambda t_, b_: got.append(b_); c.set_mode("horizontal")
+check("avisos apagados: no se manda notificacion (el modo si cambia)", got == [] and c.mode == "horizontal")
+check("las 6 acciones estan en el editor", {i for g, it in dc.ACTION_GROUPS for i, _ in it if i.startswith("app:eden_shake_")} == {"app:eden_shake_" + d for d in ("up", "down", "left", "right", "forward", "back")})
+
+
+print("v0.11: sacudida con giro, prueba continua y pad 1 espejo")
+def gyro_pulse(direction, gyro):
+    c, pad, mouse, kbd = new("vertical", "juego"); wm = FakeWm(); wm.use_mp = True
+    c.cfg["eden_shake_gyro"] = gyro
+    t = feed(c, wm, [make_report()] * 30)
+    c.eden_shake(direction)
+    best = 0.0
+    for i in range(60):
+        t = feed(c, wm, [make_report()], t)
+        best = max(best, max(abs(v) for v in c.states[0].dsu_gyro))
+    return best
+check("la sacudida lleva tambien giro (~700 grados/s por defecto)", 500 < gyro_pulse("up", 700.0) < 900, gyro_pulse("up", 700.0))
+check("con el giro a 0 solo hay aceleracion", gyro_pulse("up", 0.0) < 30.0, gyro_pulse("up", 0.0))
+check("izquierda/derecha giran sobre otro eje que arriba/abajo", gyro_pulse("left", 700.0) > 500)
+c, pad, mouse, kbd = new("vertical", "juego"); wm = FakeWm(); wm.use_mp = True
+t = feed(c, wm, [make_report()] * 30)
+c.eden_shake("up", 1.0)
+active = 0
+for i in range(250):
+    t = feed(c, wm, [make_report()], t)
+    if c._eden_pulse is not None:
+        active += 1
+check("prueba continua: dura ~1 s repitiendo y luego para sola", 140 <= active <= 190 and c._eden_pulse is None, active)
+
+srv = dc.DSUServer(26910, None); srv.mirror = True; srv.start()
+cl = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); cl.settimeout(1.0)
+cl.sendto(creq(dc.MSG_INFO, struct.pack("<i", 2) + bytes([0, 1])), ("127.0.0.1", 26910))
+srv.mark_alive()
+cl.sendto(creq(dc.MSG_INFO, struct.pack("<i", 2) + bytes([0, 1])), ("127.0.0.1", 26910))
+states = {}
+for _ in range(2):
+    r, _f = cl.recvfrom(256); states[r[20]] = r[21]
+check("con el espejo, el pad 1 se anuncia conectado", states.get(1) == 2, states)
+cl.sendto(creq(dc.MSG_DATA, bytes([1, 1]) + bytes(6)), ("127.0.0.1", 26910)); time.sleep(0.2)
+srv.push((0, 0, 1.0), (1.0, 2.0, 3.0), {}, 1_000_000)
+pk = []
+try:
+    while True:
+        pk.append(cl.recvfrom(256)[0])
+except socket.timeout:
+    pass
+check("...y manda un paquete por pad (0 y 1) con numeros distintos", sorted(p[20] for p in pk if len(p) > 80) == [0, 1] and len({p[32:36] for p in pk if len(p) > 80}) == 2, [p[20] for p in pk])
+srv.mirror = False
+check("sin espejo el pad 1 vuelve a estar libre", srv._shared(1, True)[1] == 0)
+srv.stop(); cl.close()
 
 print("\n%d correctas, %d fallos" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)

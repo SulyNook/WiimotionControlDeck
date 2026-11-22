@@ -43,7 +43,7 @@ The plugin's backend runs as root, so it does not even need the udev rules, and 
 ### Modes and profiles
 
 * **Mode** (`1 + 2` on the remote): Vertical (pointing at the screen), Horizontal (held sideways like a NES pad, 1/2 on the right), Nunchuk.
-* **Profile** (`+` and `−` together; LED 4 = Games): **Menus** — A is a mouse click, for Steam's UI. **Games** — A, B… are Deck buttons.
+* **Profile** (`+` and `−` together rotate only through the profiles ticked in **Acceso rápido** — window HOME tab or Decky; new custom profiles start unticked; LED 4 = not Menus): **Menus** — A is a mouse click, for Steam's UI. **Games** — A, B… are Deck buttons.
 
 Defaults (all of it can be changed in the editor):
 
@@ -79,6 +79,7 @@ Making the gyro look like the *Deck's own* sensor to Steam Input is not possible
 
 * **Shake** is directional (first stroke of the dominant axis decides). If left/right come out swapped, use the axis inversion options in the MOVIMIENTO tab. The cursor freezes while you shake. Sensitivity slider: *Fuerza de la sacudida*.
 * **Hold chords** (held about 2 s, `hold_chord_seconds`): **Down + Plus** toggles the IR pointer (also a toggle in the window/plugin); **Home + Plus** opens Steam's ··· menu (QAM). With Decky the plugin opens it; without Decky it falls back to Steam+A on the virtual pad (best effort). Home/Plus/1/2/− wait 0.12 s to tell chords from single presses.
+* **Notifications:** with Decky, every mode or profile change (from the remote, the window or the plugin) shows a Steam toast ("Modo: Vertical", "Perfil: Juegos") that disappears by itself.
 * **Off means off**: the Decky switch stops everything (remote released, rumble off, virtual devices closed) and remembers it; *Reiniciar WiiDeck* restarts everything keeping profiles and settings. Resuming from sleep is detected and restarts automatically. Rumble now retries its "off" report and has a keepalive, to fix the constant vibration on connect.
 * The pointer is a relative "air mouse" driven by the IR angle (45 px/degree by default, 1-euro smoothing); *Invertir X/Y* if it goes the wrong way.
 * The Nunchuk is read as a normal extension (MotionPlus off) because your Dolphin Bar never delivered Nunchuk frames in MotionPlus pass-through mode.

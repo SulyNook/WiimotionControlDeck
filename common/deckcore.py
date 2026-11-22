@@ -158,6 +158,7 @@ DEFAULT_CONFIG = {
     "dsu_port": 26761,            # 26760 lo usa SteamDeckGyroDSU (EmuDeck): se evita para no pisarlo
     "dsu_invert": [False, False, False, False, False, False],   # acel x,y,z, giro pitch,yaw,roll
     "profiles": {},               # solo cambios del usuario: profiles[perfil][modo][entrada] = accion
+    "quick_profiles": ["menus", "juego"],   # perfiles por los que rota + y - en el mando (acceso rapido)
     "custom_profiles": {},        # perfiles creados por el usuario: id -> nombre (empiezan en blanco)
     "config_version": 3,
 }
@@ -700,6 +701,7 @@ class DeckController:
         self.wiimotes = []
         self.chord_window = 0.12
         self.on_mp_change = None        # callback(want_mp)
+        self.on_notify = None           # callback(titulo, texto): el plugin lo muestra como notificacion de Steam
         self.on_open_qam = None         # callback(): el plugin de Decky abre el menu ... (QAM); sin el, se envia Steam + A
         self._now = None                # hora del ultimo fotograma (misma base de tiempo que los temporizadores)
 
@@ -822,8 +824,9 @@ class DeckController:
         if name == "cycle_mode":
             self.cycle_mode()
         elif name == "toggle_profile":
-            ids = profile_ids(self.cfg)
-            self.set_profile(ids[(ids.index(self.profile) + 1) % len(ids)] if self.profile in ids else ids[0])
+            ids = self.quick_profile_ids()
+            if ids:
+                self.set_profile(ids[(ids.index(self.profile) + 1) % len(ids)] if self.profile in ids else ids[0])
         elif name == "toggle_gyro":
             self.set_option("gyro_enabled", not self.cfg["gyro_enabled"])
         elif name == "calibrate":
@@ -922,6 +925,27 @@ class DeckController:
             if old_mp != self.want_mp():
                 self._mp_changed()
         save_config(self.cfg)
+        self._notify("WiiDeck", "Modo: %s" % MODE_TITLES[mode])
+
+    def quick_profile_ids(self):
+        """Perfiles de acceso rapido (los de + y - en el mando), en el orden de la lista de perfiles."""
+        q = self.cfg.get("quick_profiles", [])
+        return [p for p in profile_ids(self.cfg) if p in q]
+
+    def set_quick_profiles(self, ids):
+        with self.lock:
+            valid = set(profile_ids(self.cfg))
+            self.cfg["quick_profiles"] = [p for p in dict.fromkeys(ids or []) if p in valid]
+        save_config(self.cfg)
+        return True
+
+    def _notify(self, title, body):
+        cb = self.on_notify
+        if cb:
+            try:
+                cb(title, body)
+            except Exception:
+                pass
 
     def cycle_mode(self):
         self.set_mode(MODES[(MODES.index(self.mode) + 1) % len(MODES)])
@@ -939,6 +963,7 @@ class DeckController:
             if rumble:
                 self._rumble_all(0.1 if profile == "menus" else 0.25)
         save_config(self.cfg)
+        self._notify("WiiDeck", "Perfil: %s" % profile_title(self.cfg, profile))
 
     def create_profile(self, name):
         """Crea un perfil propio, en blanco (todo en 'Nada'). Devuelve su id o None."""
@@ -970,6 +995,7 @@ class DeckController:
                 self.cfg["profile"] = "menus"
                 self._apply_leds()
             del self.cfg["custom_profiles"][pid]
+            self.cfg["quick_profiles"] = [p for p in self.cfg.get("quick_profiles", []) if p != pid]
             self.cfg.get("profiles", {}).pop(pid, None)
         save_config(self.cfg)
         return True
@@ -985,7 +1011,7 @@ class DeckController:
 
     def set_option(self, key, value):
         with self.lock:
-            if key not in DEFAULT_CONFIG or key in ("profiles", "mode", "profile", "enabled", "custom_profiles", "config_version"):
+            if key not in DEFAULT_CONFIG or key in ("profiles", "mode", "profile", "enabled", "custom_profiles", "quick_profiles", "config_version"):
                 return False
             old_mp = self.want_mp()
             self.cfg[key] = value
@@ -1396,6 +1422,7 @@ class DeckService:
         self.started = False
         self._overrides = {}
         self._watch_stop = threading.Event()
+        self.on_notify = None
         self.on_open_qam = None          # callback para "Home + Plus" (lo pone el plugin de Decky ANTES de start)
     WATCH_PERIOD = 1.0
 
@@ -1483,6 +1510,7 @@ class DeckService:
         self.mgr = wl.Manager(log=self.log, on_frame=self.ctrl.on_frame, use_mp=self.ctrl.want_mp(), ir=True)
         self.ctrl.on_mp_change = lambda want: setattr(self.mgr, "use_mp", want)
         self.ctrl.on_open_qam = self.on_open_qam
+        self.ctrl.on_notify = self.on_notify
         self.mgr.start()
         self.started = True
         self._start_watchdog()
@@ -1531,6 +1559,7 @@ class DeckService:
             "dsu_port_wanted": self.cfg["dsu_port"], "dsu_open": bool(self.dsu and self.dsu.sock),
             "dsu_sent": self.dsu.sent if self.dsu else 0,
             "profile_title": profile_title(self.cfg, ctrl.profile),
+            "quick_profiles": list(self.cfg.get("quick_profiles", [])),
             "ir_enabled": self.cfg["ir_enabled"],
             "profiles": [{"id": p, "title": profile_title(self.cfg, p), "custom": p not in BUILTIN_PROFILES} for p in profile_ids(self.cfg)],
             "shake_flip_x": self.cfg["shake_flip_x"], "shake_flip_y": self.cfg["shake_flip_y"],

@@ -32,6 +32,11 @@ class Plugin:
         if self.loop is not None:
             asyncio.run_coroutine_threadsafe(decky.emit("open_qam"), self.loop)
 
+    def _notify(self, title, body):
+        """Cambio de modo/perfil (otro hilo): la interfaz lo muestra como notificacion emergente de Steam."""
+        if self.loop is not None:
+            asyncio.run_coroutine_threadsafe(decky.emit("notify", title, body), self.loop)
+
     async def _run(self, fn, *args):
         return await asyncio.get_event_loop().run_in_executor(None, fn, *args)
 
@@ -54,6 +59,7 @@ class Plugin:
         dc.configure_paths(decky.DECKY_USER_HOME)
         self.svc = dc.DeckService()
         self.svc.on_open_qam = self._open_qam
+        self.svc.on_notify = self._notify
         if dc.load_config()["enabled"]:
             await self._start()
         else:
@@ -131,6 +137,10 @@ class Plugin:
     async def create_profile(self, name):
         """Perfil nuevo EN BLANCO. Devuelve su id (o None si el nombre no vale / hay demasiados)."""
         return self.svc.ctrl.create_profile(name) if self._ok() else None
+
+    async def set_quick_profiles(self, ids):
+        """Perfiles por los que rotan + y - en el mando."""
+        return bool(self._ok() and self.svc.ctrl.set_quick_profiles(list(ids or [])))
 
     async def delete_profile(self, profile):
         return bool(self._ok() and self.svc.ctrl.delete_profile(profile))

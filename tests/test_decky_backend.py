@@ -70,6 +70,14 @@ run(asyncio.sleep(0.05))
 check("Home + Plus pide a la interfaz abrir el menu ...", EMITTED == ["open_qam"], EMITTED)
 check("el callback sobrevive a un reinicio del servicio", (run(p.restart()) or True) and p.svc.ctrl.on_open_qam is not None)
 
+
+print("notificaciones y acceso rapido (plugin)")
+EMITTED.clear()
+run(p.set_mode("nunchuk")); run(asyncio.sleep(0.05))
+check("cambiar de modo emite 'notify'", "notify" in EMITTED, EMITTED)
+check("el plugin conecta el aviso al servicio", p.svc.on_notify is not None and p.svc.ctrl.on_notify is not None)
+check("set_quick_profiles", run(p.set_quick_profiles(["juego"])) is True and run(p.get_status())["quick_profiles"] == ["juego"])
+
 print("apagado completo y reinicio")
 run(p.set_profile("juego")); run(p.set_option("px_per_deg", 77))
 before = json.dumps(json.load(open(dc.CONFIG_PATH))["profiles"], sort_keys=True)

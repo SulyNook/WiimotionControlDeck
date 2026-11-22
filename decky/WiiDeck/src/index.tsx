@@ -1,4 +1,4 @@
-import { addEventListener, callable, definePlugin, removeEventListener } from "@decky/api";
+import { addEventListener, callable, definePlugin, removeEventListener, toaster } from "@decky/api";
 import { ButtonItem, DropdownItem, Navigation, PanelSection, PanelSectionRow, SliderField, TextField, ToggleField, staticClasses } from "@decky/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -7,7 +7,7 @@ type Remote = { slot: number; status: string; battery: number; connected: boolea
 type ProfileInfo = { id: string; title: string; custom: boolean };
 type Status = {
   running: boolean; active?: boolean; error: string; version?: string; enabled?: boolean; mode?: string; profile?: string; profile_title?: string;
-  profiles?: ProfileInfo[]; ir_enabled?: boolean; devices_ok?: boolean;
+  profiles?: ProfileInfo[]; quick_profiles?: string[]; ir_enabled?: boolean; devices_ok?: boolean;
   hid_seen?: number; problems?: string[]; remotes?: Remote[]; gyro_enabled?: boolean; dsu_enabled?: boolean; dsu_clients?: number;
   dsu_port?: number; px_per_deg?: number; shake_enabled?: boolean; shake_threshold?: number; gyro_stick?: boolean; gyro_stick_gain?: number;
 };
@@ -23,6 +23,7 @@ const restartAll = callable<[], boolean>("restart");
 const setMode = callable<[string], boolean>("set_mode");
 const setProfile = callable<[string], boolean>("set_profile");
 const createProfile = callable<[string], string | null>("create_profile");
+const setQuickProfiles = callable<[string[]], boolean>("set_quick_profiles");
 const deleteProfile = callable<[string], boolean>("delete_profile");
 const setOption = callable<[string, boolean | number], boolean>("set_option");
 const applyBindings = callable<[string[][]], boolean>("apply_bindings");
@@ -324,8 +325,20 @@ function Content() {
           <DropdownItem label="Modo (1 + 2 en el mando)" rgOptions={MODES} selectedOption={st.mode} onChange={(o) => { keep(); act(setMode(o.data as string)); }} />
         </PanelSectionRow>
         <PanelSectionRow>
-          <DropdownItem label="Perfil (+ y − en el mando)" rgOptions={profileOptions(st.profiles)} selectedOption={st.profile} onChange={(o) => { keep(); act(setProfile(o.data as string)); }} />
+          <DropdownItem label="Perfil" rgOptions={profileOptions(st.profiles)} selectedOption={st.profile} onChange={(o) => { keep(); act(setProfile(o.data as string)); }} />
         </PanelSectionRow>
+        <PanelSectionRow>
+          <div style={{ fontSize: "12px", opacity: 0.8 }}>Acceso rapido: perfiles por los que rotan + y − a la vez en el mando</div>
+        </PanelSectionRow>
+        {(st.profiles ?? []).map((p) => {
+          const q = st.quick_profiles ?? [];
+          return (
+            <PanelSectionRow key={"q" + p.id}>
+              <ToggleField label={p.title} checked={q.includes(p.id)}
+                onChange={(v: boolean) => act(setQuickProfiles(v ? [...q, p.id] : q.filter((x) => x !== p.id)))} />
+            </PanelSectionRow>
+          );
+        })}
         <PanelSectionRow>
           <ToggleField label="Puntero IR" description="Apagado: el mando no mueve el cursor (tambien: Abajo + Plus mantenidos)"
             checked={st.ir_enabled !== false} onChange={(v: boolean) => act(setOption("ir_enabled", v))} />
@@ -394,6 +407,11 @@ export default definePlugin(() => {
     try { Navigation.OpenQuickAccessMenu(); } catch (e) { console.error("WiiDeck: no se pudo abrir el QAM", e); }
   };
   addEventListener("open_qam", onQam);
+  // Cambio de modo o de perfil: notificacion emergente de Steam (como "X esta jugando"), sin pedir confirmacion
+  const onNotify = (title: string, body: string) => {
+    try { toaster.toast({ title, body, duration: 2500, critical: false }); } catch (e) { console.error("WiiDeck: no se pudo mostrar la notificacion", e); }
+  };
+  addEventListener("notify", onNotify);
   return {
     name: "WiiDeck",
     titleView: <div className={staticClasses.Title}>WiiDeck</div>,
@@ -401,6 +419,7 @@ export default definePlugin(() => {
     icon: <Icon />,
     onDismount() {
       removeEventListener("open_qam", onQam);
+      removeEventListener("notify", onNotify);
     },
   };
 });

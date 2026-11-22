@@ -159,6 +159,10 @@ def run_gui(svc):
     prow = tk.Frame(home, bg=BG)
     prow.pack(fill="x")
     profile_buttons = {}
+    label(home, "Acceso rapido: perfiles por los que rotan + y - en el mando (toca para incluir o quitar)", F_SMALL, DIM).pack(anchor="w", pady=(4, 0))
+    qrow = tk.Frame(home, bg=BG)
+    qrow.pack(fill="x")
+    qstate = {"sig": None, "widgets": []}
     dyn = {"home": [], "edit": [], "sig": None}
     mid = tk.Frame(home, bg=BG)
     mid.pack(fill="both", expand=True, pady=6)
@@ -420,6 +424,32 @@ def run_gui(svc):
             e.pack(side="left", padx=2)
             dyn["edit"].append(e)
 
+    def toggle_quick(pid):
+        q = list(cfg.get("quick_profiles", []))
+        if pid in q:
+            q.remove(pid)
+        else:
+            q.append(pid)
+        ctrl.set_quick_profiles(q)
+
+    def sync_quick(st):
+        sig = (tuple((p["id"], p["title"]) for p in st["profiles"]), tuple(st["quick_profiles"]))
+        if sig == qstate["sig"]:
+            return
+        qstate["sig"] = sig
+        for w in qstate["widgets"]:
+            try:
+                w.destroy()
+            except Exception:
+                pass
+        qstate["widgets"] = []
+        for p in st["profiles"]:
+            on = p["id"] in st["quick_profiles"]
+            b = button(qrow, "%s %s" % ("SI" if on else "NO", clip(p["title"], 14)), lambda pid=p["id"]: toggle_quick(pid),
+                       font=("DejaVu Sans", 11, "bold"), width=18, bg=OK if on else PANEL, fg="#08111a" if on else FG)
+            b.pack(side="left", padx=(0, 6), pady=2)
+            qstate["widgets"].append(b)
+
     last_bind = {"key": None}
 
     def refresh_bindings(force=False):
@@ -554,6 +584,7 @@ def run_gui(svc):
                           bg=OK if st["enabled"] else BAD, fg="#08111a")
             ir_btn.config(text="PUNTERO IR:\n%s" % ("SI" if st["ir_enabled"] else "NO"), bg=OK if st["ir_enabled"] else BAD, fg="#08111a")
             sync_profiles(st)
+            sync_quick(st)
             for m, b in mode_buttons.items():
                 sel(b, m == st["mode"])
             for p, b in profile_buttons.items():

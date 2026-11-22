@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=WiiSim
+Comment=Simulador 3D de Wii Remote Plus (MotionPlus, IR, Nunchuk) con la Dolphin Bar
+Exec=AppRun
+Icon=wiisim
+Categories=Utility;Game;
+Terminal=false

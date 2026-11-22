@@ -1,0 +1,7 @@
+#!/bin/sh
+# Steam inyecta librerias propias que rompen el python/tk del sistema: se quitan.
+unset LD_PRELOAD LD_LIBRARY_PATH PYTHONHOME PYTHONPATH
+HERE="$(dirname "$(readlink -f "$0")")"
+PY="$(command -v /usr/bin/python3 || command -v python3)"
+export PYTHONDONTWRITEBYTECODE=1
+exec "$PY" "$HERE/usr/share/wiideck/wiideck.py" "$@"

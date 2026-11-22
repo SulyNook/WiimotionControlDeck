@@ -1,0 +1,11 @@
+{
+  "name": "WiiDeck",
+  "author": "WiiLinux",
+  "flags": ["root"],
+  "api_version": 1,
+  "publish": {
+    "tags": ["input", "controller"],
+    "description": "Controla la Steam Deck (tambien en Modo Juego) con un Wii Remote Plus a traves de la Dolphin Bar.",
+    "image": "https://opengraph.githubassets.com/1/SteamDeckHomebrew/decky-loader"
+  }
+}

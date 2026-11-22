@@ -1,0 +1,7 @@
+# WiiDeck / WiiSim: acceso a los mandos Wii (Dolphin Bar en modo 4 o Bluetooth) y a /dev/uinput.
+# Se instala con:  sudo sh install-udev.sh
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="057e", ATTRS{idProduct}=="0306", MODE="0666", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="057e", ATTRS{idProduct}=="0330", MODE="0666", TAG+="uaccess"
+SUBSYSTEM=="hidraw", KERNELS=="0005:057E:0306.*", MODE="0666", TAG+="uaccess"
+SUBSYSTEM=="hidraw", KERNELS=="0005:057E:0330.*", MODE="0666", TAG+="uaccess"
+KERNEL=="uinput", SUBSYSTEM=="misc", OPTIONS+="static_node=uinput", TAG+="uaccess", MODE="0660", GROUP="input"

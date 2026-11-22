@@ -245,6 +245,8 @@ class ShakeDetector:
     Detecta sacudidas del mando con el acelerometro (sin giroscopio): inversiones de signo repetidas de la
     aceleracion dinamica (acel - media lenta) en un eje.
       threshold: amplitud minima en g; reversals: inversiones necesarias; window: segundos
+    Al completarse una sacudida deja en fired_axis (0, 1, 2) el eje dominante y en fired_sign (+1/-1) el sentido del
+    PRIMER golpe (la aceleracion con la que arranca el gesto: hacia donde "lanzas" el mando).
     """
 
     def __init__(self, threshold=1.0, reversals=4, window=0.8, cooldown=1.0):
@@ -257,6 +259,10 @@ class ShakeDetector:
         self.cool_until = -1.0
         self.activity_until = -1.0   # "hay movimiento brusco": el puntero se congela
         self.peak = 0.0
+        self.first_sign = [0, 0, 0]
+        self.amp = [0.0, 0.0, 0.0]
+        self.fired_axis = None
+        self.fired_sign = 0
 
     def update(self, t, acc):
         """acc: (x, y, z) en g. Devuelve True cuando se completa una sacudida."""
@@ -283,13 +289,19 @@ class ShakeDetector:
                         self.count[i] += 1
                     else:
                         self.count[i] = 1
+                        self.first_sign[i] = s
+                        self.amp[i] = 0.0
                     self.last_rev[i] = t
                     self.sign[i] = s
+                self.amp[i] = max(self.amp[i], abs(v))
             if t - self.last_rev[i] > self.window / 2:
                 self.count[i] = 0
                 self.sign[i] = 0
-            if self.count[i] >= self.reversals and t >= self.cool_until:
-                fired = True
+        cand = [i for i in range(3) if self.count[i] >= self.reversals]
+        if cand and t >= self.cool_until:
+            i = max(cand, key=lambda k: self.amp[k])
+            self.fired_axis, self.fired_sign = i, self.first_sign[i]
+            fired = True
         if fired:
             self.cool_until = t + self.cooldown
             self.count = [0, 0, 0]
@@ -464,6 +476,8 @@ class Wiimote:
         self._reinit_req = False
         self._led = 1 << (slot & 3)
         self._rumble_until = 0.0
+        self._rumble_thread = None
+        self._keepalive_t = 0.0
         self._threads = []
         self.frames_seen = 0
 
@@ -488,6 +502,10 @@ class Wiimote:
             if t is not threading.current_thread():
                 t.join(1.5)
         if self.dev:
+            try:
+                self.dev.write([0x11, 0x00])          # vibracion y LEDs apagados: que no quede el mando vibrando al soltarlo
+            except OSError:
+                pass
             self.dev.close()
 
     def send(self, data):
@@ -521,14 +539,26 @@ class Wiimote:
         self.send([0x11, (self._led << 4) | (1 if time.monotonic() < self._rumble_until else 0)])
 
     def rumble(self, seconds=0.15):
-        self._rumble_until = time.monotonic() + seconds
+        self._rumble_until = max(self._rumble_until, time.monotonic() + seconds)
         self.send([0x11, (self._led << 4) | 1])
+        t = self._rumble_thread
+        if t is None or not t.is_alive():
+            self._rumble_thread = threading.Thread(target=self._rumble_off, name="wm-rumble-%d" % self.slot, daemon=True)
+            self._rumble_thread.start()
 
-        def off():
-            time.sleep(seconds)
-            if not self._stop:
-                self.send([0x11, (self._led << 4)])
-        threading.Thread(target=off, daemon=True).start()
+    def _rumble_off(self):
+        """Apaga la vibracion al vencer el plazo (que otra vibracion pueda ampliar). Si el informe de apagar se pierde
+        (EAGAIN/EIO justo al reconectar) se REINTENTA: antes quedaba el mando vibrando para siempre."""
+        while not self._stop:
+            wait = self._rumble_until - time.monotonic()
+            if wait > 0:
+                time.sleep(min(wait, 0.2))
+                continue
+            for _ in range(10):
+                if self.send([0x11, self._led << 4]):
+                    return
+                time.sleep(0.05)
+            return
 
     def request_reinit(self):
         self._reinit_req = True
@@ -624,6 +654,10 @@ class Wiimote:
                         self.status_text = "Mando desconectado"
                         self._log("CONN", "Sin informes durante 3 s: mando desconectado")
                     else:
+                        now = time.monotonic()
+                        if now >= self._rumble_until and now - self._keepalive_t > 1.5:
+                            self._keepalive_t = now      # seguro: si una vibracion se quedo encendida, esto la apaga
+                            self.send([0x11, self._led << 4])
                         time.sleep(0.1)
             except Exception as ex:
                 self.status_text = "Error: %s" % ex

@@ -38,7 +38,7 @@ class FakeUInput:
         self.events.extend(events)
 
     def close(self):
-        pass
+        self.opened = False
 
     def where(self, typ, code):
         return [v for t, c, v in self.events if t == typ and c == code]

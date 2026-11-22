@@ -1,11 +1,13 @@
-import { callable, definePlugin } from "@decky/api";
-import { ButtonItem, DropdownItem, PanelSection, PanelSectionRow, SliderField, ToggleField, staticClasses } from "@decky/ui";
+import { addEventListener, callable, definePlugin, removeEventListener } from "@decky/api";
+import { ButtonItem, DropdownItem, Navigation, PanelSection, PanelSectionRow, SliderField, TextField, ToggleField, staticClasses } from "@decky/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 // ------------------------------------------------------------------ tipos (los devuelve main.py)
 type Remote = { slot: number; status: string; battery: number; connected: boolean; ir: number; nunchuk: boolean; gyro: boolean; owner: boolean };
+type ProfileInfo = { id: string; title: string; custom: boolean };
 type Status = {
-  running: boolean; error: string; version?: string; enabled?: boolean; mode?: string; profile?: string; devices_ok?: boolean;
+  running: boolean; active?: boolean; error: string; version?: string; enabled?: boolean; mode?: string; profile?: string; profile_title?: string;
+  profiles?: ProfileInfo[]; ir_enabled?: boolean; devices_ok?: boolean;
   hid_seen?: number; problems?: string[]; remotes?: Remote[]; gyro_enabled?: boolean; dsu_enabled?: boolean; dsu_clients?: number;
   dsu_port?: number; px_per_deg?: number; shake_enabled?: boolean; shake_threshold?: number; gyro_stick?: boolean; gyro_stick_gain?: number;
 };
@@ -17,10 +19,13 @@ type BindingsView = { mode: string; profile: string; inputs: InputRow[]; actions
 const getStatus = callable<[], Status>("get_status");
 const getBindings = callable<[string, string], BindingsView | null>("get_bindings");
 const setEnabled = callable<[boolean], boolean>("set_enabled");
+const restartAll = callable<[], boolean>("restart");
 const setMode = callable<[string], boolean>("set_mode");
 const setProfile = callable<[string], boolean>("set_profile");
+const createProfile = callable<[string], string | null>("create_profile");
+const deleteProfile = callable<[string], boolean>("delete_profile");
 const setOption = callable<[string, boolean | number], boolean>("set_option");
-const setBinding = callable<[string, string, string, string], boolean>("set_binding");
+const applyBindings = callable<[string[][]], boolean>("apply_bindings");
 const resetBindings = callable<[string, string], boolean>("reset_bindings");
 const calibrate = callable<[], boolean>("calibrate");
 
@@ -29,10 +34,11 @@ const MODES = [
   { data: "horizontal", label: "Horizontal (como un mando de NES)" },
   { data: "nunchuk", label: "Nunchuk (puntero + palanca)" },
 ];
-const PROFILES = [
-  { data: "menus", label: "Menus de Steam (A = clic)" },
-  { data: "juego", label: "Juegos (A, B... como la Deck)" },
+const FALLBACK_PROFILES: ProfileInfo[] = [
+  { id: "menus", title: "Menus de Steam (A = clic)", custom: false },
+  { id: "juego", title: "Juegos (A, B... como la Deck)", custom: false },
 ];
+const profileOptions = (ps?: ProfileInfo[]) => (ps && ps.length ? ps : FALLBACK_PROFILES).map((p) => ({ data: p.id, label: p.title }));
 
 // ------------------------------------------------------------------ componentes
 /** Deslizador que no satura al backend: guarda 250 ms despues de soltar y no se pisa con el sondeo mientras se mueve. */
@@ -66,10 +72,14 @@ function OptionSlider(props: { label: string; value: number; min: number; max: n
   );
 }
 
-function ButtonsEditor() {
+function ButtonsEditor(props: { profiles?: ProfileInfo[]; onChanged: () => void }) {
   const [editProfile, setEditProfile] = useState<string | null>(null);
   const [editMode, setEditMode] = useState<string | null>(null);
   const [view, setView] = useState<BindingsView | null>(null);
+  // Cambios sin aplicar: clave "perfil|modo|entrada" -> valor. Nada se guarda hasta pulsar APLICAR.
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [newName, setNewName] = useState("");
+  const [msg, setMsg] = useState("");
 
   const load = useCallback(async (p: string | null, m: string | null) => {
     const v = await getBindings(m ?? "", p ?? "");   // "" = el modo/perfil activo
@@ -85,37 +95,108 @@ function ButtonsEditor() {
 
   if (!view || !editProfile || !editMode) return <PanelSectionRow>Cargando...</PanelSectionRow>;
   const actionOptions = view.actions.map((a) => ({ data: a.id, label: a.group + ": " + a.label }));
+  const keyOf = (input: string) => editProfile + "|" + editMode + "|" + input;
+  const pending = Object.keys(drafts).length;
+  const info = (props.profiles ?? []).find((p) => p.id === editProfile);
+
+  const apply = async () => {
+    const changes = Object.keys(drafts).map((k) => [...k.split("|"), drafts[k]]);
+    const ok = await applyBindings(changes);
+    setMsg(ok ? "Guardado y aplicado (" + changes.length + ")" : "No se pudo aplicar");
+    if (ok) setDrafts({});
+    load(editProfile, editMode);
+  };
 
   return (
     <>
       <PanelSectionRow>
-        <DropdownItem label="Perfil que editas" rgOptions={PROFILES} selectedOption={editProfile} onChange={(o) => setEditProfile(o.data as string)} />
+        <DropdownItem label="Perfil que editas" rgOptions={profileOptions(props.profiles)} selectedOption={editProfile} onChange={(o) => setEditProfile(o.data as string)} />
       </PanelSectionRow>
       <PanelSectionRow>
         <DropdownItem label="Modo que editas" rgOptions={MODES} selectedOption={editMode} onChange={(o) => setEditMode(o.data as string)} />
       </PanelSectionRow>
-      {view.inputs.map((row) => (
-        <PanelSectionRow key={row.input}>
-          <DropdownItem
-            label={row.label}
-            rgOptions={row.options ? row.options.map((o) => ({ data: o.id, label: o.label })) : actionOptions}
-            selectedOption={row.value}
-            onChange={async (o) => {
-              await setBinding(row.input, o.data as string, editMode, editProfile);
-              load(editProfile, editMode);
-            }}
-          />
+      {view.inputs.map((row) => {
+        const shown = drafts[keyOf(row.input)] ?? row.value;
+        const opts = row.options ? row.options.map((o) => ({ data: o.id, label: o.label })) : actionOptions;
+        // un combo (A + B) hecho en la ventana de escritorio no esta en la lista: se muestra tal cual
+        if (!opts.some((o) => o.data === shown)) opts.unshift({ data: shown, label: "Combo: " + shown.replace(/[a-z]+:/g, "").replace(/\+/g, " + ") });
+        return (
+          <PanelSectionRow key={row.input}>
+            <DropdownItem
+              label={row.label + (keyOf(row.input) in drafts ? "  *" : "")}
+              rgOptions={opts}
+              selectedOption={shown}
+              onChange={(o) => {
+                const v = o.data as string;
+                setMsg("");
+                setDrafts((d) => {
+                  const n = { ...d };
+                  if (v === row.value) delete n[keyOf(row.input)];   // volver al valor guardado = no es cambio
+                  else n[keyOf(row.input)] = v;
+                  return n;
+                });
+              }}
+            />
+          </PanelSectionRow>
+        );
+      })}
+      <PanelSectionRow>
+        <ButtonItem layout="below" disabled={pending === 0} onClick={apply}>
+          {pending ? "APLICAR cambios (" + pending + ")" : "APLICAR (sin cambios)"}
+        </ButtonItem>
+      </PanelSectionRow>
+      {pending > 0 && (
+        <PanelSectionRow>
+          <ButtonItem layout="below" onClick={() => { setDrafts({}); setMsg("Cambios descartados"); }}>Descartar cambios</ButtonItem>
         </PanelSectionRow>
-      ))}
+      )}
+      {msg && <PanelSectionRow><div style={{ fontSize: "12px" }}>{msg}</div></PanelSectionRow>}
       <PanelSectionRow>
         <ButtonItem
           layout="below"
           onClick={async () => {
             await resetBindings(editMode, editProfile);
+            setDrafts({});
             load(editProfile, editMode);
           }}
         >
           Restaurar este modo
+        </ButtonItem>
+      </PanelSectionRow>
+      {info && info.custom && (
+        <PanelSectionRow>
+          <ButtonItem
+            layout="below"
+            onClick={async () => {
+              await deleteProfile(editProfile);
+              setDrafts({});
+              setEditProfile(null);
+              props.onChanged();
+            }}
+          >
+            Borrar el perfil "{info.title}"
+          </ButtonItem>
+        </PanelSectionRow>
+      )}
+      <PanelSectionRow>
+        <TextField label="Perfil nuevo (en blanco)" description="Escribe un nombre y pulsa Crear" value={newName} onChange={(e) => setNewName(e.target.value)} />
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <ButtonItem
+          layout="below"
+          disabled={!newName.trim()}
+          onClick={async () => {
+            const id = await createProfile(newName.trim());
+            if (id) {
+              setNewName("");
+              setDrafts({});
+              setEditProfile(id);
+              setMsg("Perfil creado: todo en blanco. Asigna botones y pulsa APLICAR.");
+            } else setMsg("No se pudo crear (nombre vacio o maximo de perfiles)");
+            props.onChanged();
+          }}
+        >
+          + Añadir perfil
         </ButtonItem>
       </PanelSectionRow>
     </>
@@ -125,6 +206,7 @@ function ButtonsEditor() {
 function Content() {
   const [st, setSt] = useState<Status | null>(null);
   const [showButtons, setShowButtons] = useState(false);
+  const [wait, setWait] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -140,13 +222,22 @@ function Content() {
   }, [refresh]);
 
   const act = (p: Promise<unknown>) => p.then(refresh);
+  const slow = async (p: Promise<unknown>) => {   // encender/reiniciar tarda unos segundos
+    setWait(true);
+    try { await p; } finally { setWait(false); refresh(); }
+  };
 
   if (!st) return <PanelSection title="WiiDeck"><PanelSectionRow>Cargando...</PanelSectionRow></PanelSection>;
   if (!st.running)
+    // Apagado del todo (o fallo al arrancar): solo el interruptor y el reinicio. Los perfiles siguen guardados.
     return (
       <PanelSection title="WiiDeck">
-        <PanelSectionRow><div style={{ color: "#ffd60a" }}>{st.error}</div></PanelSectionRow>
-        <PanelSectionRow><ButtonItem layout="below" onClick={refresh}>Reintentar</ButtonItem></PanelSectionRow>
+        <PanelSectionRow>
+          <ToggleField label="Activar WiiDeck" description={wait ? "Arrancando..." : "Apagado del todo: el mando no hace nada"} checked={false}
+            disabled={wait} onChange={(v: boolean) => slow(setEnabled(v))} />
+        </PanelSectionRow>
+        {st.error && <PanelSectionRow><div style={{ color: "#ffd60a" }}>{st.error}</div></PanelSectionRow>}
+        <PanelSectionRow><ButtonItem layout="below" disabled={wait} onClick={() => slow(restartAll())}>Reiniciar WiiDeck</ButtonItem></PanelSectionRow>
       </PanelSection>
     );
 
@@ -160,10 +251,16 @@ function Content() {
         <PanelSectionRow>
           <ToggleField
             label="Activar WiiDeck"
-            description={st.enabled ? "El mando controla la Deck" : "Apagado: el mando no hace nada"}
-            checked={!!st.enabled}
-            onChange={(v: boolean) => act(setEnabled(v))}
+            description={wait ? "Apagando..." : "Encendido. Al apagarlo se detiene todo del todo"}
+            checked={true}
+            disabled={wait}
+            onChange={(v: boolean) => slow(setEnabled(v))}
           />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem layout="below" disabled={wait} onClick={() => slow(restartAll())}>
+            {wait ? "Reiniciando..." : "Reiniciar WiiDeck (perfiles y ajustes se conservan)"}
+          </ButtonItem>
         </PanelSectionRow>
         <PanelSectionRow>
           <div style={{ fontSize: "12px", lineHeight: "1.4" }}>
@@ -179,13 +276,17 @@ function Content() {
           <DropdownItem label="Modo (1 + 2 en el mando)" rgOptions={MODES} selectedOption={st.mode} onChange={(o) => act(setMode(o.data as string))} />
         </PanelSectionRow>
         <PanelSectionRow>
-          <DropdownItem label="Perfil (+ y − en el mando)" rgOptions={PROFILES} selectedOption={st.profile} onChange={(o) => act(setProfile(o.data as string))} />
+          <DropdownItem label="Perfil (+ y − en el mando)" rgOptions={profileOptions(st.profiles)} selectedOption={st.profile} onChange={(o) => act(setProfile(o.data as string))} />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ToggleField label="Puntero IR" description="Apagado: el mando no mueve el cursor (tambien: Abajo + Plus mantenidos)"
+            checked={st.ir_enabled !== false} onChange={(v: boolean) => act(setOption("ir_enabled", v))} />
         </PanelSectionRow>
       </PanelSection>
 
       <PanelSection title="Giroscopio">
         <PanelSectionRow>
-          <ToggleField label="Giroscopio (MotionPlus)" description="No se puede usar a la vez que el Nunchuk" checked={!!st.gyro_enabled}
+          <ToggleField label="Giroscopio (MotionPlus)" description="Los mandos Plus lo traen integrado" checked={!!st.gyro_enabled}
             onChange={(v: boolean) => act(setOption("gyro_enabled", v))} />
         </PanelSectionRow>
         <PanelSectionRow>
@@ -212,7 +313,7 @@ function Content() {
             onCommit={(n) => act(setOption("px_per_deg", n))} />
         </PanelSectionRow>
         <PanelSectionRow>
-          <ToggleField label="Agitar = cambiar de coleccion" checked={!!st.shake_enabled}
+          <ToggleField label="Agitar el mando (arriba/abajo/izq./der.)" description="Cada direccion se asigna en la edicion de botones" checked={!!st.shake_enabled}
             onChange={(v: boolean) => act(setOption("shake_enabled", v))} />
         </PanelSectionRow>
         <PanelSectionRow>
@@ -227,7 +328,7 @@ function Content() {
             {showButtons ? "Ocultar asignacion" : "Editar asignacion de botones"}
           </ButtonItem>
         </PanelSectionRow>
-        {showButtons && <ButtonsEditor />}
+        {showButtons && <ButtonsEditor profiles={st.profiles} onChanged={refresh} />}
       </PanelSection>
     </>
   );
@@ -239,10 +340,19 @@ const Icon = () => (
   </svg>
 );
 
-export default definePlugin(() => ({
-  name: "WiiDeck",
-  titleView: <div className={staticClasses.Title}>WiiDeck</div>,
-  content: <Content />,
-  icon: <Icon />,
-  onDismount() {},
-}));
+export default definePlugin(() => {
+  // Home + Plus mantenidos en el mando: el backend avisa y aqui se abre el menu ··· de Steam (QAM)
+  const onQam = () => {
+    try { Navigation.OpenQuickAccessMenu(); } catch (e) { console.error("WiiDeck: no se pudo abrir el QAM", e); }
+  };
+  addEventListener("open_qam", onQam);
+  return {
+    name: "WiiDeck",
+    titleView: <div className={staticClasses.Title}>WiiDeck</div>,
+    content: <Content />,
+    icon: <Icon />,
+    onDismount() {
+      removeEventListener("open_qam", onQam);
+    },
+  };
+});

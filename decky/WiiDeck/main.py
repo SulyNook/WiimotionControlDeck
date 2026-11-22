@@ -2,7 +2,12 @@
 WiiDeck - plugin de Decky Loader (backend).
 Envuelve deckcore.DeckService: el mando Wii -> puntero, gamepad virtual, giroscopio (DSU). Corre como root ("flags": ["root"]),
 asi que no necesita reglas udev para la Dolphin Bar ni para /dev/uinput; la configuracion se guarda en la carpeta del usuario.
+
+  * Interruptor principal = APAGADO COMPLETO: cierra los mandos (con la vibracion apagada), los dispositivos virtuales y el
+    servidor DSU. Los perfiles y ajustes se conservan y se recuperan al volver a activarlo.
+  * "Reiniciar" = apagar todo y volver a arrancar leyendo la configuracion guardada (tambien se hace solo al despertar de suspender).
 """
+import asyncio
 import os
 import sys
 
@@ -19,26 +24,44 @@ import deckcore as dc  # noqa: E402
 class Plugin:
     svc = None
     error = ""
+    loop = None
 
-    async def _main(self):
-        dc.configure_paths(decky.DECKY_USER_HOME)
-        self.svc = dc.DeckService()
+    # ------------------------------------------------------------------ ciclo de vida
+    def _open_qam(self):
+        """Home + Plus mantenidos: el controlador (otro hilo) pide a la interfaz que abra el menu ... de Steam."""
+        if self.loop is not None:
+            asyncio.run_coroutine_threadsafe(decky.emit("open_qam"), self.loop)
+
+    async def _run(self, fn, *args):
+        return await asyncio.get_event_loop().run_in_executor(None, fn, *args)
+
+    async def _start(self):
+        """Arranca el servicio. Devuelve True si quedo en marcha."""
+        self.error = ""
         try:
-            self.svc.start()
+            await self._run(self.svc.start)
             decky.logger.info("WiiDeck %s iniciado" % dc.VERSION)
         except dc.AlreadyRunning as e:
             self.error = str(e)
-            self.svc = None
             decky.logger.warning(self.error)
         except Exception as e:  # el plugin nunca debe tumbar a Decky
             self.error = "WiiDeck no pudo iniciar: %r" % e
-            self.svc = None
             decky.logger.exception(self.error)
+        return self.svc.started
+
+    async def _main(self):
+        self.loop = asyncio.get_event_loop()
+        dc.configure_paths(decky.DECKY_USER_HOME)
+        self.svc = dc.DeckService()
+        self.svc.on_open_qam = self._open_qam
+        if dc.load_config()["enabled"]:
+            await self._start()
+        else:
+            decky.logger.info("WiiDeck esta apagado (se dejo asi la ultima vez)")
 
     async def _unload(self):
-        if self.svc:
-            self.svc.stop()
-            self.svc = None
+        if self.svc and self.svc.started:
+            await self._run(self.svc.stop)
         decky.logger.info("WiiDeck detenido")
 
     async def _uninstall(self):
@@ -50,21 +73,50 @@ class Plugin:
 
     async def get_status(self):
         if not self._ok():
-            return {"running": False, "error": self.error or "WiiDeck no esta en marcha"}
+            return {"running": False, "active": False, "error": self.error,
+                    "enabled": bool(self.svc and dc.load_config()["enabled"] and self.error)}
         st = self.svc.status()
         st["running"] = True
+        st["active"] = True
         st["error"] = ""
         return st
+
+    async def set_enabled(self, enabled):
+        """Interruptor principal: ACTIVAR arranca todo; DESACTIVAR lo apaga del todo (y recuerda el estado)."""
+        if self.svc is None:
+            return False
+        if enabled:
+            if not self.svc.started:
+                cfg = dc.load_config()
+                cfg["enabled"] = True
+                dc.save_config(cfg)
+                await self._start()
+        else:
+            self.error = ""
+            if self.svc.started:
+                self.svc.cfg["enabled"] = False          # stop() guarda la configuracion
+                await self._run(self.svc.stop)
+            else:
+                cfg = dc.load_config()
+                cfg["enabled"] = False
+                dc.save_config(cfg)
+        return self._ok()
+
+    async def restart(self):
+        """Apaga todo y lo arranca de nuevo (conserva perfiles y ajustes)."""
+        if self.svc is None:
+            return False
+        self.error = ""
+        if self.svc.started:
+            await self._run(self.svc.restart)
+        else:
+            await self._start()
+        return self._ok()
 
     async def get_bindings(self, mode=None, profile=None):
         if not self._ok():
             return None
         return self.svc.bindings_view(mode or None, profile or None)
-
-    async def set_enabled(self, enabled):
-        if self._ok():
-            self.svc.ctrl.set_enabled(bool(enabled))
-        return self._ok()
 
     async def set_mode(self, mode):
         if self._ok():
@@ -76,8 +128,19 @@ class Plugin:
             self.svc.ctrl.set_profile(profile)
         return self._ok()
 
+    async def create_profile(self, name):
+        """Perfil nuevo EN BLANCO. Devuelve su id (o None si el nombre no vale / hay demasiados)."""
+        return self.svc.ctrl.create_profile(name) if self._ok() else None
+
+    async def delete_profile(self, profile):
+        return bool(self._ok() and self.svc.ctrl.delete_profile(profile))
+
     async def set_option(self, key, value):
         return bool(self._ok() and self.svc.set_option(key, value))
+
+    async def apply_bindings(self, changes):
+        """Aplica de golpe los cambios acumulados en el editor: lista de [perfil, modo, entrada, valor]. Todo o nada."""
+        return bool(self._ok() and self.svc.ctrl.apply_bindings([tuple(c) for c in (changes or [])]))
 
     async def set_binding(self, input_name, value, mode=None, profile=None):
         return bool(self._ok() and self.svc.ctrl.set_binding(input_name, value, mode or None, profile or None))

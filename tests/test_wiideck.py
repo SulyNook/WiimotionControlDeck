@@ -40,7 +40,7 @@ t = feed(c, wm, [make_report(wl.BTN_B)] * 3 + [make_report(0)] * 3, t)
 check("vertical: B = boton B del gamepad", pad.where(wd.EV_KEY, 0x131) == [1, 0])
 t = feed(c, wm, [make_report(wl.BTN_UP)] * 3 + [make_report(0)] * 3, t)
 check("vertical: Up = hat arriba (-1)", -1 in pad.where(wd.EV_ABS, wd.ABS_HAT0Y))
-t = feed(c, wm, [make_report(wl.BTN_HOME)] * 3 + [make_report(0)] * 3, t)
+t = feed(c, wm, [make_report(wl.BTN_HOME)] * 3 + [make_report(0)] * 15, t)      # Home espera 120 ms por si es Home + Plus
 check("Home = boton Guia", pad.where(wd.EV_KEY, 0x13C) == [1, 0])
 
 c, pad, mouse = new_ctrl("horizontal"); wm = FakeWm()
@@ -119,17 +119,14 @@ def shake_frames(freq=5.0, amp=1.6, secs=1.2, dt=0.006):
     return out
 c, pad, mouse = new_ctrl("vertical"); wm = FakeWm()
 t = feed(c, wm, [make_report(acc=(128, 128, 154))] * 300)
-t = feed(c, wm, shake_frames(), t)
+t = feed(c, wm, shake_frames(amp=-1.6), t)     # el mando arranca hacia la derecha (el acelerometro crudo baja)
 t = feed(c, wm, [make_report(acc=(128, 128, 154))] * 30, t)
-check("agitar -> R1 (siguiente coleccion)", pad.where(wd.EV_KEY, 0x137)[:2] == [1, 0] and not pad.where(wd.EV_KEY, 0x136), pad.where(wd.EV_KEY, 0x137))
+check("agitar a la derecha -> R1 (siguiente coleccion)", pad.where(wd.EV_KEY, 0x137)[:2] == [1, 0] and not pad.where(wd.EV_KEY, 0x136), pad.where(wd.EV_KEY, 0x137))
 c, pad, mouse = new_ctrl("vertical"); wm = FakeWm()
 t = feed(c, wm, [make_report(acc=(128, 128, 154))] * 300)
-frames = [wl.parse_data_report(r, 0) for r in shake_frames()]
-tt = t
-c.on_frame(wm, wl.parse_data_report(make_report(buttons=wl.BTN_B), tt)); tt += 0.006
-for r in shake_frames():
-    c.on_frame(wm, wl.parse_data_report(r[:1] + bytes([r[1] | 0, r[2] | 0x04]) + r[3:], tt)); tt += 0.006   # B pulsado (bit 0x0400)
-check("agitar con B pulsado -> L1 (coleccion anterior)", pad.where(wd.EV_KEY, 0x136)[:1] == [1], (pad.where(wd.EV_KEY, 0x136), pad.where(wd.EV_KEY, 0x137)))
+t = feed(c, wm, shake_frames(amp=1.6), t)
+t = feed(c, wm, [make_report(acc=(128, 128, 154))] * 30, t)
+check("agitar a la izquierda -> L1 (coleccion anterior)", pad.where(wd.EV_KEY, 0x136)[:2] == [1, 0] and not pad.where(wd.EV_KEY, 0x137), (pad.where(wd.EV_KEY, 0x136), pad.where(wd.EV_KEY, 0x137)))
 c, pad, mouse = new_ctrl("vertical"); wm = FakeWm()
 t = feed(c, wm, [make_report(acc=(128, 128, 154))] * 300)
 t = feed(c, wm, [make_report(acc=(int(128 + 26 * 0.3 * math.sin(i / 20.0)), 128, 154)) for i in range(600)], t)

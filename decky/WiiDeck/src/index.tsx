@@ -40,6 +40,40 @@ const FALLBACK_PROFILES: ProfileInfo[] = [
 ];
 const profileOptions = (ps?: ProfileInfo[]) => (ps && ps.length ? ps : FALLBACK_PROFILES).map((p) => ({ data: p.id, label: p.title }));
 
+// ------------------------------------------------------------------ estado que sobrevive a recreaciones del panel
+// Al elegir una opcion en un desplegable, Decky/Steam recrea el panel y salta a la cabecera. Lo que importa
+// (editor abierto, perfil/modo que editas, cambios sin aplicar) vive fuera del componente.
+const ui = {
+  showButtons: false,
+  editProfile: null as string | null,
+  editMode: null as string | null,
+  drafts: {} as Record<string, string>,
+};
+
+/** Primer ancestro con scroll vertical (el contenedor del menu rapido). */
+function scrollParent(el: HTMLElement | null): HTMLElement | null {
+  let n: HTMLElement | null = el;
+  while (n) {
+    const oy = window.getComputedStyle(n).overflowY;
+    if ((oy === "auto" || oy === "scroll") && n.scrollHeight > n.clientHeight) return n;
+    n = n.parentElement;
+  }
+  return null;
+}
+
+/** Llamar desde onChange de un desplegable: recuerda el scroll y lo devuelve cuando Decky termina de gestionar el foco (300 ms). */
+function holdScroll(anchor: HTMLElement | null) {
+  const sc = scrollParent(anchor);
+  if (!sc) return;
+  const top = sc.scrollTop;
+  [300, 700].forEach((ms) =>
+    window.setTimeout(() => {
+      const diff = top - sc.scrollTop;
+      if (Math.abs(diff) > 2) sc.scrollBy({ top: diff });
+    }, ms)
+  );
+}
+
 // ------------------------------------------------------------------ componentes
 /** Deslizador que no satura al backend: guarda 250 ms despues de soltar y no se pisa con el sondeo mientras se mueve. */
 function OptionSlider(props: { label: string; value: number; min: number; max: number; step: number; description?: string; onCommit: (v: number) => Promise<unknown> }) {
@@ -72,12 +106,18 @@ function OptionSlider(props: { label: string; value: number; min: number; max: n
   );
 }
 
-function ButtonsEditor(props: { profiles?: ProfileInfo[]; onChanged: () => void }) {
-  const [editProfile, setEditProfile] = useState<string | null>(null);
-  const [editMode, setEditMode] = useState<string | null>(null);
+function ButtonsEditor(props: { profiles?: ProfileInfo[]; onChanged: () => void; keep: () => void }) {
+  const [editProfile, setEditProfileS] = useState<string | null>(ui.editProfile);
+  const [editMode, setEditModeS] = useState<string | null>(ui.editMode);
+  const setEditProfile = (v: string | null | ((c: string | null) => string | null)) =>
+    setEditProfileS((c) => { const n = typeof v === "function" ? v(c) : v; ui.editProfile = n; return n; });
+  const setEditMode = (v: string | null | ((c: string | null) => string | null)) =>
+    setEditModeS((c) => { const n = typeof v === "function" ? v(c) : v; ui.editMode = n; return n; });
   const [view, setView] = useState<BindingsView | null>(null);
   // Cambios sin aplicar: clave "perfil|modo|entrada" -> valor. Nada se guarda hasta pulsar APLICAR.
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [drafts, setDraftsS] = useState<Record<string, string>>(ui.drafts);
+  const setDrafts = (v: Record<string, string> | ((c: Record<string, string>) => Record<string, string>)) =>
+    setDraftsS((c) => { const n = typeof v === "function" ? v(c) : v; ui.drafts = n; return n; });
   const [newName, setNewName] = useState("");
   const [msg, setMsg] = useState("");
 
@@ -110,10 +150,10 @@ function ButtonsEditor(props: { profiles?: ProfileInfo[]; onChanged: () => void 
   return (
     <>
       <PanelSectionRow>
-        <DropdownItem label="Perfil que editas" rgOptions={profileOptions(props.profiles)} selectedOption={editProfile} onChange={(o) => setEditProfile(o.data as string)} />
+        <DropdownItem label="Perfil que editas" rgOptions={profileOptions(props.profiles)} selectedOption={editProfile} onChange={(o) => { props.keep(); setEditProfile(o.data as string); }} />
       </PanelSectionRow>
       <PanelSectionRow>
-        <DropdownItem label="Modo que editas" rgOptions={MODES} selectedOption={editMode} onChange={(o) => setEditMode(o.data as string)} />
+        <DropdownItem label="Modo que editas" rgOptions={MODES} selectedOption={editMode} onChange={(o) => { props.keep(); setEditMode(o.data as string); }} />
       </PanelSectionRow>
       {view.inputs.map((row) => {
         const shown = drafts[keyOf(row.input)] ?? row.value;
@@ -127,6 +167,7 @@ function ButtonsEditor(props: { profiles?: ProfileInfo[]; onChanged: () => void 
               rgOptions={opts}
               selectedOption={shown}
               onChange={(o) => {
+                props.keep();
                 const v = o.data as string;
                 setMsg("");
                 setDrafts((d) => {
@@ -205,21 +246,28 @@ function ButtonsEditor(props: { profiles?: ProfileInfo[]; onChanged: () => void 
 
 function Content() {
   const [st, setSt] = useState<Status | null>(null);
-  const [showButtons, setShowButtons] = useState(false);
+  const [showButtons, setShowButtonsS] = useState(ui.showButtons);
+  const setShowButtons = (v: boolean) => { ui.showButtons = v; setShowButtonsS(v); };
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const keep = () => holdScroll(rootRef.current);
   const [wait, setWait] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
-      setSt(await getStatus());
+      const n = await getStatus();
+      // si no ha cambiado nada se conserva el mismo objeto: no hay re-render y los desplegables no se cierran
+      setSt((cur) => (cur && JSON.stringify(cur) === JSON.stringify(n) ? cur : n));
     } catch (e) {
       setSt({ running: false, error: "No se puede hablar con el backend de WiiDeck: " + e });
     }
   }, []);
   useEffect(() => {
     refresh();
+    // con el editor de botones abierto no se sondea: re-renderizar cada segundo cierra los desplegables y salta a la cabecera
+    if (showButtons) return () => {};
     const id = window.setInterval(refresh, 1000);
     return () => window.clearInterval(id);
-  }, [refresh]);
+  }, [refresh, showButtons]);
 
   const act = (p: Promise<unknown>) => p.then(refresh);
   const slow = async (p: Promise<unknown>) => {   // encender/reiniciar tarda unos segundos
@@ -246,7 +294,7 @@ function Content() {
   if (st.hid_seen === 0) problems.push("No se ve la Dolphin Bar (modo 4). Conectala y enciende el mando.");
 
   return (
-    <>
+    <div ref={rootRef}>
       <PanelSection title="WiiDeck">
         <PanelSectionRow>
           <ToggleField
@@ -273,10 +321,10 @@ function Content() {
           </div>
         </PanelSectionRow>
         <PanelSectionRow>
-          <DropdownItem label="Modo (1 + 2 en el mando)" rgOptions={MODES} selectedOption={st.mode} onChange={(o) => act(setMode(o.data as string))} />
+          <DropdownItem label="Modo (1 + 2 en el mando)" rgOptions={MODES} selectedOption={st.mode} onChange={(o) => { keep(); act(setMode(o.data as string)); }} />
         </PanelSectionRow>
         <PanelSectionRow>
-          <DropdownItem label="Perfil (+ y − en el mando)" rgOptions={profileOptions(st.profiles)} selectedOption={st.profile} onChange={(o) => act(setProfile(o.data as string))} />
+          <DropdownItem label="Perfil (+ y − en el mando)" rgOptions={profileOptions(st.profiles)} selectedOption={st.profile} onChange={(o) => { keep(); act(setProfile(o.data as string)); }} />
         </PanelSectionRow>
         <PanelSectionRow>
           <ToggleField label="Puntero IR" description="Apagado: el mando no mueve el cursor (tambien: Abajo + Plus mantenidos)"
@@ -328,9 +376,9 @@ function Content() {
             {showButtons ? "Ocultar asignacion" : "Editar asignacion de botones"}
           </ButtonItem>
         </PanelSectionRow>
-        {showButtons && <ButtonsEditor profiles={st.profiles} onChanged={refresh} />}
+        {showButtons && <ButtonsEditor profiles={st.profiles} onChanged={refresh} keep={keep} />}
       </PanelSection>
-    </>
+    </div>
   );
 }
 

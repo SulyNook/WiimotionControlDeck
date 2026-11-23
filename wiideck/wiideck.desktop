@@ -1,8 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=WiiDeck
-Comment=Controla la Steam Deck (Modo Juego) con un Wiimote Plus: puntero IR, botones asignables, giroscopio, Nunchuk
-Exec=AppRun
-Icon=wiideck
-Categories=Utility;Game;
-Terminal=false

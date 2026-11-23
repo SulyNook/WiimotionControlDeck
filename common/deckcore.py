@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-deckcore - nucleo de WiiDeck (sin ventana): controlador, perfiles de botones, dispositivos virtuales (uinput),
-giroscopio -> servidor DSU (cemuhook) para emuladores, y el servicio que une todo.
-Lo usan la ventana (wiideck.py) y el plugin de Decky (decky/WiiDeck/main.py).
+deckcore - core of WimotionControlDeck (no window): controller, button profiles, virtual devices (uinput),
+gyro -> DSU (cemuhook) server for emulators, and the service that ties it all together.
+Used by the window (wimotioncontroldeck.py) and the Decky plugin (decky/WimotionControlDeck/main.py).
 """
 import fcntl
 import json
@@ -19,98 +19,98 @@ from collections import deque
 
 import wiilink as wl
 
-APP_NAME = "WiiDeck"
-VERSION = "0.11"
+APP_NAME = "WimotionControlDeck"
+VERSION = "0.13"
 MODES = ("vertical", "horizontal", "nunchuk")
 MODE_TITLES = {"vertical": "Vertical", "horizontal": "Horizontal", "nunchuk": "Nunchuk"}
 MODE_LEDS = {"vertical": 0b0001, "horizontal": 0b0010, "nunchuk": 0b0100}
 BUILTIN_PROFILES = ("menus", "juego")
-PROFILES = BUILTIN_PROFILES          # solo los de fabrica; con los del usuario: profile_ids(cfg)
-PROFILE_TITLES = {"menus": "Menus de Steam", "juego": "Juegos"}
+PROFILES = BUILTIN_PROFILES          # factory profiles only; including the user's: profile_ids(cfg)
+PROFILE_TITLES = {"menus": "Steam Menus", "juego": "Games"}
 MAX_CUSTOM_PROFILES = 6
-MAX_COMBO = 4                        # botones que se pueden asignar a la vez a una entrada (A + B + ...)
+MAX_COMBO = 4                        # buttons that can be assigned at once to one input (A + B + ...)
 SHAKE_INPUTS = ("ShakeLeft", "ShakeRight", "ShakeUp", "ShakeDown")
 
-# ----------------------------------------------------------------------------- rutas
-CONFIG_DIR = os.path.expanduser("~/.config/wiideck")
+# ----------------------------------------------------------------------------- paths
+CONFIG_DIR = os.path.expanduser("~/.config/wimotioncontroldeck")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
-LOG_DIR = os.path.expanduser("~/.local/share/wiideck/logs")
+LOG_DIR = os.path.expanduser("~/.local/share/wimotioncontroldeck/logs")
 
 
 HOME = os.path.expanduser("~")
 
 
 def configure_paths(home):
-    """Para el plugin de Decky: el backend corre como root, pero la configuracion es la del usuario."""
+    """For the Decky plugin: the backend runs as root, but the configuration is the user's."""
     global CONFIG_DIR, CONFIG_PATH, LOG_DIR, HOME
     HOME = home
-    CONFIG_DIR = os.path.join(home, ".config/wiideck")
+    CONFIG_DIR = os.path.join(home, ".config/wimotioncontroldeck")
     CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
-    LOG_DIR = os.path.join(home, ".local/share/wiideck/logs")
+    LOG_DIR = os.path.join(home, ".local/share/wimotioncontroldeck/logs")
 
 
-# ----------------------------------------------------------------------------- acciones y perfiles
+# ----------------------------------------------------------------------------- actions and profiles
 INPUTS = [
-    ("Pointer", "Puntero IR"), ("A", "Mando: A"), ("B", "Mando: B (gatillo)"), ("One", "Mando: 1"), ("Two", "Mando: 2"),
-    ("Plus", "Mando: +"), ("Minus", "Mando: -"), ("Home", "Mando: Home"),
-    ("Up", "Cruceta arriba"), ("Down", "Cruceta abajo"), ("Left", "Cruceta izquierda"), ("Right", "Cruceta derecha"),
-    ("NunC", "Nunchuk: C"), ("NunZ", "Nunchuk: Z"), ("NunStick", "Nunchuk: palanca"), ("NunShake", "Nunchuk: agitar"),
-    ("ShakeLeft", "Agitar a la izquierda"), ("ShakeRight", "Agitar a la derecha"),
-    ("ShakeUp", "Agitar hacia arriba"), ("ShakeDown", "Agitar hacia abajo"),
+    ("Pointer", "IR pointer"), ("A", "Remote: A"), ("B", "Remote: B (trigger)"), ("One", "Remote: 1"), ("Two", "Remote: 2"),
+    ("Plus", "Remote: +"), ("Minus", "Remote: -"), ("Home", "Remote: Home"),
+    ("Up", "D-pad up"), ("Down", "D-pad down"), ("Left", "D-pad left"), ("Right", "D-pad right"),
+    ("NunC", "Nunchuk: C"), ("NunZ", "Nunchuk: Z"), ("NunStick", "Nunchuk: stick"), ("NunShake", "Nunchuk: shake"),
+    ("ShakeLeft", "Shake left"), ("ShakeRight", "Shake right"),
+    ("ShakeUp", "Shake up"), ("ShakeDown", "Shake down"),
 ]
 INPUT_LABELS = dict(INPUTS)
 
 ACTION_GROUPS = [
-    ("Botones", [("pad:A", "A"), ("pad:B", "B"), ("pad:X", "X"), ("pad:Y", "Y"), ("pad:TL", "L1"), ("pad:TR", "R1"),
+    ("Buttons", [("pad:A", "A"), ("pad:B", "B"), ("pad:X", "X"), ("pad:Y", "Y"), ("pad:TL", "L1"), ("pad:TR", "R1"),
                  ("trig:L2", "L2"), ("trig:R2", "R2"), ("pad:THUMBL", "L3"), ("pad:THUMBR", "R3"),
-                 ("pad:START", "Menu"), ("pad:SELECT", "Vista"), ("pad:MODE", "Steam")]),
-    ("Cruceta", [("hat:up", "Cruceta arriba"), ("hat:down", "Cruceta abajo"), ("hat:left", "Cruceta izq."), ("hat:right", "Cruceta der.")]),
-    ("Stick izquierdo", [("lstick:up", "Stick izq. arriba"), ("lstick:down", "Stick izq. abajo"),
-                         ("lstick:left", "Stick izq. izq."), ("lstick:right", "Stick izq. der.")]),
-    ("Stick derecho", [("rstick:up", "Stick der. arriba"), ("rstick:down", "Stick der. abajo"),
-                       ("rstick:left", "Stick der. izq."), ("rstick:right", "Stick der. der.")]),
-    ("Raton", [("mouse:LEFT", "Clic izquierdo"), ("mouse:RIGHT", "Clic derecho"), ("mouse:MIDDLE", "Clic central"),
-               ("wheel:up", "Rueda arriba"), ("wheel:down", "Rueda abajo")]),
-    ("Teclado: especiales", [("key:ESC", "Esc"), ("key:ENTER", "Intro"), ("key:SPACE", "Espacio"), ("key:TAB", "Tab"), ("key:BACKSPACE", "Borrar"),
-                             ("key:UP", "Flecha arriba"), ("key:DOWN", "Flecha abajo"), ("key:LEFT", "Flecha izq."), ("key:RIGHT", "Flecha der."),
-                             ("key:HOME", "Inicio"), ("key:END", "Fin"), ("key:PAGEUP", "Re Pag"), ("key:PAGEDOWN", "Av Pag"),
-                             ("key:INSERT", "Insertar"), ("key:DELETE", "Suprimir"),
-                             ("key:LSHIFT", "Mayus (Shift)"), ("key:LCTRL", "Ctrl"), ("key:LALT", "Alt"), ("key:LMETA", "Tecla Windows/Super")]),
-    ("Teclado: letras", [("key:" + c, c) for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"]),
-    ("Teclado: numeros", [("key:" + c, c) for c in "1234567890"]),
-    ("Teclado: F1-F12", [("key:F%d" % i, "F%d" % i) for i in range(1, 13)]),
-    ("Teclado: otros", [("key:MINUS", "-"), ("key:EQUAL", "="), ("key:COMMA", ","), ("key:DOT", "."), ("key:SLASH", "/"),
-                        ("key:VOLUMEUP", "Volumen +"), ("key:VOLUMEDOWN", "Volumen -"), ("key:MUTE", "Silenciar"),
-                        ("key:PLAYPAUSE", "Play/Pausa"), ("key:NEXTSONG", "Siguiente"), ("key:PREVSONG", "Anterior")]),
-    ("Programa", [("app:cycle_mode", "Cambiar de modo"), ("app:toggle_profile", "Cambiar de perfil"),
-                  ("app:toggle_gyro", "Giroscopio si/no"), ("app:calibrate", "Calibrar giroscopio"),
-                  ("app:eden_shake_up", "Sacudida al emulador: arriba"), ("app:eden_shake_down", "Sacudida al emulador: abajo"),
-                  ("app:eden_shake_left", "Sacudida al emulador: izquierda"), ("app:eden_shake_right", "Sacudida al emulador: derecha"),
-                  ("app:eden_shake_forward", "Sacudida al emulador: adelante"), ("app:eden_shake_back", "Sacudida al emulador: atras"),
-                  ("app:toggle_enabled", "WiiDeck si/no"), ("app:toggle_pointer", "Puntero IR si/no"),
-                  ("app:open_qam", "Abrir menu ... (QAM)"), ("none", "Nada")]),
+                 ("pad:START", "Menu"), ("pad:SELECT", "View"), ("pad:MODE", "Steam")]),
+    ("D-pad", [("hat:up", "D-pad up"), ("hat:down", "D-pad down"), ("hat:left", "D-pad left"), ("hat:right", "D-pad right")]),
+    ("Left stick", [("lstick:up", "Left stick up"), ("lstick:down", "Left stick down"),
+                    ("lstick:left", "Left stick left"), ("lstick:right", "Left stick right")]),
+    ("Right stick", [("rstick:up", "Right stick up"), ("rstick:down", "Right stick down"),
+                     ("rstick:left", "Right stick left"), ("rstick:right", "Right stick right")]),
+    ("Mouse", [("mouse:LEFT", "Left click"), ("mouse:RIGHT", "Right click"), ("mouse:MIDDLE", "Middle click"),
+               ("wheel:up", "Wheel up"), ("wheel:down", "Wheel down")]),
+    ("Keyboard: special", [("key:ESC", "Esc"), ("key:ENTER", "Enter"), ("key:SPACE", "Space"), ("key:TAB", "Tab"), ("key:BACKSPACE", "Backspace"),
+                             ("key:UP", "Up arrow"), ("key:DOWN", "Down arrow"), ("key:LEFT", "Left arrow"), ("key:RIGHT", "Right arrow"),
+                             ("key:HOME", "Home"), ("key:END", "End"), ("key:PAGEUP", "Page Up"), ("key:PAGEDOWN", "Page Down"),
+                             ("key:INSERT", "Insert"), ("key:DELETE", "Delete"),
+                             ("key:LSHIFT", "Shift"), ("key:LCTRL", "Ctrl"), ("key:LALT", "Alt"), ("key:LMETA", "Windows/Super key")]),
+    ("Keyboard: letters", [("key:" + c, c) for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"]),
+    ("Keyboard: numbers", [("key:" + c, c) for c in "1234567890"]),
+    ("Keyboard: F1-F12", [("key:F%d" % i, "F%d" % i) for i in range(1, 13)]),
+    ("Keyboard: other", [("key:MINUS", "-"), ("key:EQUAL", "="), ("key:COMMA", ","), ("key:DOT", "."), ("key:SLASH", "/"),
+                        ("key:VOLUMEUP", "Volumen +"), ("key:VOLUMEDOWN", "Volumen -"), ("key:MUTE", "Mute"),
+                        ("key:PLAYPAUSE", "Play/Pausa"), ("key:NEXTSONG", "Next"), ("key:PREVSONG", "Previous")]),
+    ("Program", [("app:cycle_mode", "Switch mode"), ("app:toggle_profile", "Switch profile"),
+                 ("app:toggle_gyro", "Gyro on/off"), ("app:calibrate", "Calibrate gyro"),
+                 ("app:eden_shake_up", "Shake to emulator: up"), ("app:eden_shake_down", "Shake to emulator: down"),
+                 ("app:eden_shake_left", "Shake to emulator: left"), ("app:eden_shake_right", "Shake to emulator: right"),
+                 ("app:eden_shake_forward", "Shake to emulator: forward"), ("app:eden_shake_back", "Shake to emulator: back"),
+                 ("app:toggle_enabled", "WimotionControlDeck on/off"), ("app:toggle_pointer", "IR pointer on/off"),
+                 ("app:open_qam", "Open ... menu (QAM)"), ("none", "None")]),
 ]
-# Capa previa del editor: primero se elige el tipo (Mando / Teclado / Raton / Programa) y luego la accion dentro de el
+# Editor pre-layer: first pick the type (Gamepad / Keyboard / Mouse / Program), then the action within it
 CATEGORIES = [
-    ("Mando", ["Botones", "Cruceta", "Stick izquierdo", "Stick derecho"]),
-    ("Teclado", ["Teclado: especiales", "Teclado: letras", "Teclado: numeros", "Teclado: F1-F12", "Teclado: otros"]),
-    ("Raton", ["Raton"]),
-    ("Programa", ["Programa"]),
+    ("Gamepad", ["Buttons", "D-pad", "Left stick", "Right stick"]),
+    ("Keyboard", ["Keyboard: special", "Keyboard: letters", "Keyboard: numbers", "Keyboard: F1-F12", "Keyboard: other"]),
+    ("Mouse", ["Mouse"]),
+    ("Program", ["Program"]),
 ]
 
 
 def category_of(action_id):
-    """Tipo al que pertenece una accion ('pad:A' -> 'Mando'); 'none' y lo desconocido -> 'Programa'."""
+    """Type an action belongs to ('pad:A' -> 'Gamepad'); 'none' and unknown actions -> 'Program'."""
     for cat, groups in CATEGORIES:
         for g, items in ACTION_GROUPS:
             if g in groups and any(i == action_id for i, _ in items):
                 return cat
-    return "Programa"
+    return "Program"
 
 
 ACTION_LABELS = {aid: label for _, items in ACTION_GROUPS for aid, label in items}
-POINTER_CHOICES = [("mouse", "Mueve el raton"), ("none", "Desactivado")]
-STICK_CHOICES = [("lstick", "Stick izquierdo"), ("rstick", "Stick derecho"), ("hat", "Cruceta"), ("none", "Nada")]
+POINTER_CHOICES = [("mouse", "Moves the mouse"), ("none", "Disabled")]
+STICK_CHOICES = [("lstick", "Left stick"), ("rstick", "Right stick"), ("hat", "D-pad"), ("none", "None")]
 ALL_ACTION_IDS = set(ACTION_LABELS)
 
 
@@ -123,7 +123,7 @@ def join_actions(parts):
     parts = [p for p in parts if p and p != "none"]
     return "+".join(parts) if parts else "none"
 
-# agitar a la derecha = la lista se desplaza a la izquierda (siguiente coleccion, R1); a la izquierda = anterior (L1)
+# shake right = the list scrolls left (next collection, R1); shake left = previous (L1)
 _COMMON_SHAKE = {"ShakeRight": "pad:TR", "ShakeLeft": "pad:TL", "ShakeUp": "none", "ShakeDown": "none"}
 _NUN = {"NunC": "pad:TL", "NunZ": "trig:L2", "NunStick": "lstick"}
 _DPAD_HAT = {"Up": "hat:up", "Down": "hat:down", "Left": "hat:left", "Right": "hat:right"}
@@ -138,17 +138,17 @@ def _b(**kw):
 
 _SYS = {"Plus": "pad:START", "Minus": "pad:SELECT", "Home": "pad:MODE"}
 _HORIZ = {"Pointer": "none", "Two": "pad:A", "One": "pad:B", "A": "pad:X", "B": "pad:Y",
-          # mando de lado: la cruceta gira 90 grados y hace de stick izquierdo (no de cruceta)
+          # remote held sideways: the D-pad rotates 90 degrees and acts as the left stick (not as a D-pad)
           "Up": "lstick:left", "Right": "lstick:up", "Down": "lstick:right", "Left": "lstick:down"}
 
 DEFAULT_PROFILES = {
-    # Menus de Steam: el puntero hace clic con A
+    # Steam Menus: the pointer clicks with A
     "menus": {
         "vertical": _b(a={"Pointer": "mouse", "A": "mouse:LEFT", "B": "pad:B", "One": "pad:X", "Two": "pad:Y"}, y=_SYS, d=_DPAD_HAT, n=_NUN, s=_COMMON_SHAKE),
         "horizontal": _b(a=_HORIZ, y=_SYS, n=_NUN, s=_COMMON_SHAKE),
         "nunchuk": _b(a={"Pointer": "mouse", "A": "mouse:LEFT", "B": "pad:B", "One": "pad:X", "Two": "pad:Y"}, y=_SYS, d=_DPAD_HAT, n=_NUN, s=_COMMON_SHAKE),
     },
-    # Juegos: A, B... como botones de la Steam Deck
+    # Games: A, B... as Steam Deck buttons
     "juego": {
         "vertical": _b(a={"Pointer": "mouse", "A": "pad:A", "B": "trig:R2", "One": "pad:X", "Two": "pad:Y"}, y=_SYS, d=_DPAD_HAT, n=_NUN, s=_COMMON_SHAKE),
         "horizontal": _b(a=_HORIZ, y=_SYS, n=_NUN, s=_COMMON_SHAKE),
@@ -156,15 +156,15 @@ DEFAULT_PROFILES = {
     },
 }
 
-# (botones a la vez, accion del programa, segundos que hay que MANTENERLOS: 0 = al instante)
+# (buttons at once, program action, seconds they must be HELD: 0 = instant)
 CHORDS = (
     (wl.BTN_ONE | wl.BTN_TWO, "cycle_mode", 0.0),
     (wl.BTN_PLUS | wl.BTN_MINUS, "toggle_profile", 0.0),
     (wl.BTN_DOWN | wl.BTN_PLUS, "toggle_pointer", None),     # None = cfg["hold_chord_seconds"]
     (wl.BTN_HOME | wl.BTN_PLUS, "open_qam", None),
 )
-CHORD_MEMBERS = {wl.BTN_ONE, wl.BTN_TWO, wl.BTN_PLUS, wl.BTN_MINUS, wl.BTN_HOME}   # esperan chord_window antes de pulsar
-HOLD_FREE = {wl.BTN_DOWN}     # participa en un acorde de mantener sin retrasar su pulsacion normal (la cruceta no puede ir con retraso)
+CHORD_MEMBERS = {wl.BTN_ONE, wl.BTN_TWO, wl.BTN_PLUS, wl.BTN_MINUS, wl.BTN_HOME}   # wait chord_window before pressing
+HOLD_FREE = {wl.BTN_DOWN}     # takes part in a hold chord without delaying its normal press (the D-pad cannot be delayed)
 
 DEFAULT_CONFIG = {
     "mode": "vertical",
@@ -176,38 +176,38 @@ DEFAULT_CONFIG = {
     "invert_x": False,
     "invert_y": False,
     "shake_enabled": True,
-    "shake_threshold": 0.55,      # g de aceleracion dinamica (menos = mas facil)
-    "shake_reversals": 3,         # cambios de sentido necesarios (2 = ida y vuelta; mas = mas "agitar de verdad")
-    "shake_gap": 0.4,             # segundos maximos entre cambios de sentido (mas alto = admite agitar mas lento y suave)
-    "ir_enabled": True,           # puntero IR global (se alterna con Abajo + Plus mantenidos, o desde el plugin)
-    "hold_chord_seconds": 2.0,    # cuanto hay que mantener Abajo+Plus / Home+Plus
-    "notify_enabled": True,        # avisos emergentes al cambiar de modo o de perfil (plugin de Decky)
-    "dsu_mirror": False,           # envia el movimiento tambien como pad 1 (por si el juego lee el 2.o sensor)
-    "eden_shake_gyro": 700.0,      # giro (grados/s) que acompana a la sacudida sintetica (una muneca que sacude tambien gira)
-    "eden_shake_amp": 5.0,         # fuerza (g) de la sacudida sintetica que se manda al emulador por DSU
-    "eden_shake_hz": 8.0,          # velocidad del vaiven (Hz)
-    "eden_shake_cycles": 2,        # numero de vaivenes
-    "gyro_deadzone": 2.0,           # grados/s por debajo de los cuales el giro enviado al DSU es 0 (quita la deriva lenta)
-    "dsu_accel_gain": 1.0,         # multiplica el acelerometro enviado al DSU (sube si un juego no nota los golpes)
-    "gyro_from_accel": True,       # sin MotionPlus (modo Nunchuk): giro aproximado con el acelerometro para el DSU
-    "shake_flip_x": False,        # invierte izquierda/derecha del agitado (si tu mando lo detecta al reves)
-    "shake_flip_y": False,        # invierte arriba/abajo del agitado
+    "shake_threshold": 0.55,      # g of dynamic acceleration (lower = easier)
+    "shake_reversals": 3,         # direction reversals required (2 = back and forth; more = a more "real shake")
+    "shake_gap": 0.4,             # max seconds between direction reversals (higher = allows slower, gentler shaking)
+    "ir_enabled": True,           # global IR pointer (toggled by holding Down + Plus, or from the plugin)
+    "hold_chord_seconds": 2.0,    # how long Down+Plus / Home+Plus must be held
+    "notify_enabled": True,        # pop-up notices when switching mode or profile (Decky plugin)
+    "dsu_mirror": False,           # also send the motion as pad 1 (in case the game reads the 2nd sensor)
+    "eden_shake_gyro": 700.0,      # rotation (deg/s) that accompanies the synthetic shake (a wrist that shakes also rotates)
+    "eden_shake_amp": 5.0,         # strength (g) of the synthetic shake sent to the emulator over DSU
+    "eden_shake_hz": 8.0,          # speed of the back-and-forth (Hz)
+    "eden_shake_cycles": 2,        # number of back-and-forth swings
+    "gyro_deadzone": 2.0,           # deg/s below which the gyro sent to DSU is 0 (removes slow drift)
+    "dsu_accel_gain": 1.0,         # multiplies the accelerometer sent to DSU (raise it if a game does not notice hits)
+    "gyro_from_accel": True,       # without MotionPlus (Nunchuk mode): approximate gyro from the accelerometer for DSU
+    "shake_flip_x": False,        # flips left/right of the shake (if your remote detects it reversed)
+    "shake_flip_y": False,        # flips up/down of the shake
     "nunchuk_deadzone": 0.15,
-    "gyro_enabled": True,         # activa el MotionPlus (no compatible con el Nunchuk, que lo necesita apagado)
-    "gyro_stick": False,          # giroscopio -> stick derecho (apuntar)
+    "gyro_enabled": True,         # enables MotionPlus (not compatible with the Nunchuk, which needs it off)
+    "gyro_stick": False,          # gyro -> right stick (aiming)
     "gyro_stick_gain": 1.0,
-    "dsu_enabled": True,          # servidor DSU/cemuhook: movimiento para emuladores
-    "dsu_port": 26760,            # el de siempre de los emuladores; ademas se escucha en 26761 (por si 26760 lo ocupa otro programa)
-    "dsu_invert": [False, False, False, False, False, False],   # acel x,y,z, giro pitch,yaw,roll
-    "profiles": {},               # solo cambios del usuario: profiles[perfil][modo][entrada] = accion
-    "quick_profiles": ["menus", "juego"],   # perfiles por los que rota + y - en el mando (acceso rapido)
-    "custom_profiles": {},        # perfiles creados por el usuario: id -> nombre (empiezan en blanco)
+    "dsu_enabled": True,          # DSU/cemuhook server: motion for emulators
+    "dsu_port": 26760,            # the usual emulator port; 26761 is also listened on (in case another program holds 26760)
+    "dsu_invert": [False, False, False, False, False, False],   # accel x,y,z, gyro pitch,yaw,roll
+    "profiles": {},               # user changes only: profiles[profile][mode][input] = action
+    "quick_profiles": ["menus", "juego"],   # profiles that + and - on the remote cycle through (quick access)
+    "custom_profiles": {},        # user-created profiles: id -> name (they start blank)
     "config_version": 4,
 }
 
 
 def makedirs_owned(path):
-    """Crea la carpeta (bajo HOME). Si somos root (plugin de Decky) las deja a nombre del usuario, para que la AppImage pueda escribir."""
+    """Creates the folder (under HOME). If we are root (Decky plugin) it leaves them owned by the user, so the AppImage can write."""
     try:
         st = os.stat(HOME)
     except OSError:
@@ -237,7 +237,7 @@ def _fix_owner(path):
 
 
 def default_bindings(profile, mode):
-    """Asignaciones de fabrica. Los perfiles del usuario empiezan en blanco: todo en 'Nada'."""
+    """Factory bindings. User profiles start blank: everything set to 'None'."""
     base = {name: "none" for name, _ in INPUTS}
     if profile in DEFAULT_PROFILES:
         base.update(DEFAULT_PROFILES[profile][mode])
@@ -268,7 +268,7 @@ def load_config():
             cfg[k] = v
     if isinstance(user.get("profiles"), dict):
         cfg["profiles"] = user["profiles"]
-    # migracion de v0.1: "bindings" por modo = perfil "menus"
+    # migration from v0.1: per-mode "bindings" = "menus" profile
     if isinstance(user.get("bindings"), dict):
         for mode, d in user["bindings"].items():
             if isinstance(d, dict) and mode in MODES:
@@ -280,7 +280,7 @@ def load_config():
                               if isinstance(cp, dict) else {})
     if cfg["profile"] not in profile_ids(cfg):
         cfg["profile"] = "menus"
-    # migracion: el puerto 26760 (el de antes) choca con SteamDeckGyroDSU de EmuDeck
+    # migration: port 26760 (the old one) clashes with EmuDeck's SteamDeckGyroDSU
     if int(user.get("config_version", 0) or 0) < 4 and cfg.get("dsu_port") in (26760, 26761):
         cfg["dsu_port"] = DEFAULT_CONFIG["dsu_port"]
     cfg["config_version"] = DEFAULT_CONFIG["config_version"]
@@ -348,7 +348,7 @@ EVENT_FMT = "llHHi"
 
 
 class UInput:
-    """Dispositivo virtual uinput (interfaz uinput_user_dev, valida en todos los nucleos)."""
+    """Virtual uinput device (uinput_user_dev interface, valid on all kernels)."""
 
     def __init__(self, name, vendor, product, keys=(), rels=(), abss=None, bustype=3, version=0x110):
         self.name, self.vendor, self.product, self.version, self.bustype = name, vendor, product, version, bustype
@@ -365,7 +365,7 @@ class UInput:
             except OSError as e:
                 last = e
         if self.fd is None:
-            raise last or OSError("no hay /dev/uinput")
+            raise last or OSError("no /dev/uinput")
         try:
             if self.keys:
                 fcntl.ioctl(self.fd, UI_SET_EVBIT, EV_KEY)
@@ -391,7 +391,7 @@ class UInput:
             raise
 
     def emit(self, events):
-        """events: lista de (tipo, codigo, valor); se anade SYN_REPORT."""
+        """events: list of (type, code, value); SYN_REPORT is appended."""
         if self.fd is None or not events:
             return
         now = time.time()
@@ -418,7 +418,7 @@ class UInput:
 
 
 def make_pad():
-    # Se presenta como un mando de Xbox 360: Steam y SDL lo reconocen sin configuracion.
+    # Presents itself as an Xbox 360 controller: Steam and SDL recognise it without configuration.
     abss = {ABS_X: (-32768, 32767, 16, 128), ABS_Y: (-32768, 32767, 16, 128),
             ABS_RX: (-32768, 32767, 16, 128), ABS_RY: (-32768, 32767, 16, 128),
             ABS_Z: (0, 255, 0, 0), ABS_RZ: (0, 255, 0, 0), ABS_HAT0X: (-1, 1, 0, 0), ABS_HAT0Y: (-1, 1, 0, 0)}
@@ -426,16 +426,16 @@ def make_pad():
 
 
 def make_mouse():
-    return UInput("WiiDeck Mouse", 0x1209, 0x57D1, keys=MOUSE_BUTTONS.values(), rels=(REL_X, REL_Y, REL_WHEEL, REL_HWHEEL))
+    return UInput("WimotionControlDeck Mouse", 0x1209, 0x57D1, keys=MOUSE_BUTTONS.values(), rels=(REL_X, REL_Y, REL_WHEEL, REL_HWHEEL))
 
 
 def make_keyboard():
-    return UInput("WiiDeck Keyboard", 0x1209, 0x57D2, keys=KEYS.values())
+    return UInput("WimotionControlDeck Keyboard", 0x1209, 0x57D2, keys=KEYS.values())
 
 
-# ----------------------------------------------------------------------------- giroscopio
+# ----------------------------------------------------------------------------- gyro
 class GyroTracker:
-    """MotionPlus -> velocidad angular en el cuerpo del mando (gr/s) con calibracion del sesgo."""
+    """MotionPlus -> angular velocity in the remote's body frame (deg/s) with bias calibration."""
     SLOW = 440.0 / 8192.0
     FAST = 2000.0 / 8192.0
 
@@ -447,7 +447,7 @@ class GyroTracker:
         self.cal_t0 = None
         self.cal_sum = [0.0] * 3
         self.cal_n = 0
-        self.body = (0.0, 0.0, 0.0)       # (pitch +arriba, roll +derecha, yaw +izquierda) gr/s
+        self.body = (0.0, 0.0, 0.0)       # (pitch +up, roll +right, yaw +left) deg/s
 
     def request_calibration(self, t):
         self.cal_t0 = t
@@ -472,7 +472,7 @@ class GyroTracker:
                 for k in range(3):
                     self.zero_slow[k] = self.zero_fast[k] = self.cal_sum[k] / self.cal_n
                 self.cal_t0 = None
-        # auto-cero con el mando en reposo estable (ruido ~0,3 gr/s = ~5 unidades)
+        # auto-zero while the remote rests steadily (noise ~0.3 deg/s = ~5 units)
         self.win.append(raw)
         self.n += 1
         if all_slow and len(self.win) == self.win.maxlen and self.n % 10 == 0:
@@ -494,21 +494,21 @@ class GyroTracker:
         for k in range(3):
             zero = self.zero_slow[k] if slow[k] else self.zero_fast[k]
             dps[k] = (raw[k] - zero) * (self.SLOW if slow[k] else self.FAST)
-        # crudo: yaw +derecha, roll +derecha, pitch +arriba (verificado con el IR)
+        # raw: yaw +right, roll +right, pitch +up (verified with the IR)
         self.body = (dps[2], dps[1], -dps[0])
         return self.body
 
 
 class AccGyro:
     """
-    Giro APROXIMADO a partir del acelerometro, para cuando no hay MotionPlus (modo Nunchuk). La direccion de "arriba" que mide
-    el acelerometro gira en sentido contrario al mando: omega = -(a_antes x a_ahora) / dt (grados/s, ejes del cuerpo del mando).
-    Solo da cabeceo y alabeo (el giro sobre la vertical -guinada- no se nota en la gravedad) y solo vale con movimientos
-    suaves (si el mando acelera mucho, |a| se aleja de 1 g y se ignora). Es mucho menos fino que el giroscopio real.
+    APPROXIMATE gyro derived from the accelerometer, for when there is no MotionPlus (Nunchuk mode). The "up" direction measured
+    by the accelerometer rotates opposite to the remote: omega = -(a_before x a_now) / dt (deg/s, remote body axes).
+    It only gives pitch and roll (rotation about the vertical -yaw- is not visible in gravity) and only works with gentle
+    movements (if the remote accelerates hard, |a| drifts away from 1 g and is ignored). It is far less precise than a real gyro.
     """
-    TAU = 0.04          # suavizado de la direccion
-    SPAN = 0.06         # base de tiempo de la derivada (s)
-    DEAD = 6.0          # grados/s por debajo de los cuales se da 0 (ruido)
+    TAU = 0.04          # direction smoothing
+    SPAN = 0.06         # time base of the derivative (s)
+    DEAD = 6.0          # deg/s below which 0 is output (noise)
 
     def __init__(self):
         self.a = None
@@ -524,7 +524,7 @@ class AccGyro:
 
     def update(self, acc, t):
         mag = math.sqrt(acc[0] ** 2 + acc[1] ** 2 + acc[2] ** 2)
-        if mag < 0.75 or mag > 1.25:           # el mando esta siendo sacudido: la gravedad no se distingue
+        if mag < 0.75 or mag > 1.25:           # the remote is being shaken: gravity cannot be distinguished
             self.hist.clear()
             self.out = [v * 0.5 for v in self.out]
             return tuple(self.out)
@@ -557,9 +557,9 @@ class AccGyro:
 
 def motion_to_dsu(gyro_body, acc_body, preset, invert):
     """
-    Convierte al sistema de ejes de un mando DS4/DSU. Mando (x derecha, y punta, z arriba) -> "mando de juego"
-    (x derecha, y adelante, z arriba): vertical = identico; de lado (NES, punta a la izquierda) = (-y, x, z).
-    DS4: acel = (x, z, -y); giro = (pitch, yaw, roll) = (gx, gz, -gy). Ajustable con dsu_invert.
+    Converts to the axis system of a DS4/DSU controller. Remote (x right, y tip, z up) -> "gamepad"
+    (x right, y forward, z up): vertical = identical; sideways (NES, tip to the left) = (-y, x, z).
+    DS4: accel = (x, z, -y); gyro = (pitch, yaw, roll) = (gx, gz, -gy). Adjustable with dsu_invert.
     """
     def conv(v):
         if preset == "sideways":
@@ -574,40 +574,81 @@ def motion_to_dsu(gyro_body, acc_body, preset, invert):
     return tuple(vals[:3]), tuple(vals[3:])
 
 
-# ----------------------------------------------------------------------------- servidor DSU (cemuhook)
+# ----------------------------------------------------------------------------- DSU server (cemuhook)
 DSU_VERSION = 1001
 MSG_VERSION, MSG_INFO, MSG_DATA = 0x100000, 0x100001, 0x100002
 
 
+def port_owner(port):
+    """(pid, name, command line) of the program holding the local UDP port open, or None. Reads /proc (seeing other
+    users' processes requires root, as with the Decky plugin)."""
+    hexport = ":%04X" % port
+    inodes = set()
+    for path in ("/proc/net/udp", "/proc/net/udp6"):
+        try:
+            with open(path) as f:
+                next(f, None)
+                for line in f:
+                    p = line.split()
+                    if len(p) > 9 and p[1].upper().endswith(hexport):
+                        inodes.add(p[9])
+        except OSError:
+            pass
+    if not inodes:
+        return None
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            for fd in os.listdir("/proc/%s/fd" % pid):
+                try:
+                    link = os.readlink("/proc/%s/fd/%s" % (pid, fd))
+                except OSError:
+                    continue
+                if link.startswith("socket:[") and link[8:-1] in inodes:
+                    try:
+                        name = open("/proc/%s/comm" % pid).read().strip()
+                        cmd = open("/proc/%s/cmdline" % pid, "rb").read().replace(b"\0", b" ").decode("utf-8", "replace").strip()
+                    except OSError:
+                        name, cmd = "?", ""
+                    return int(pid), name, cmd
+        except OSError:
+            continue
+    return None
+
+
 class DSUServer:
-    """Servidor de movimiento DSU/cemuhook por UDP (puerto 26760). Los emuladores se conectan y reciben acel+giro del mando."""
+    """DSU/cemuhook motion server over UDP (port 26760). Emulators connect and receive the remote's accel+gyro."""
 
     def __init__(self, port=26760, log=None, bind="127.0.0.1", extra_ports=()):
         self.port, self.log, self.bind = port, log, bind
-        self.extra_ports = tuple(extra_ports)   # puertos adicionales en los que tambien se escucha (si estan libres)
+        self.extra_ports = tuple(extra_ports)   # additional ports that are also listened on (if free)
         self.extra_socks = []
-        self.client_sock = {}                   # addr -> socket por el que habla ese cliente
+        self.client_sock = {}                   # addr -> socket that client talks through
         self.requested_port = port
         self.server_id = random.getrandbits(32)
         self.sock = None
-        self.clients = {}            # addr -> instante de caducidad
+        self.clients = {}            # addr -> expiry time
         self.packet_no = 0
         self.last_send = 0.0
         self.connected = False
-        self.last_data = 0.0          # ultima vez que el controlador nos dio datos de un mando
-        self.sent = 0                 # paquetes de movimiento enviados
+        self.last_data = 0.0          # last time the controller gave us data from a remote
+        self.sent = 0                 # motion packets sent
         self.battery = 0x05
         self._stop = False
         self._thread = None
         self.lock = threading.Lock()
         self._seen_bad = set()
-        self.mirror = False           # copia los mismos datos en el pad 1 (para el 2.o sensor de movimiento del emulador)
-        self.on_client = None         # callback() cuando se conecta un emulador (para loguear si hay giro)
+        self.extra_state = {}         # extra port -> ("wimotioncontroldeck" | "busy", who)
+        self.retry_s = 5.0
+        self._extras_t = time.monotonic()
+        self.mirror = False           # copies the same data to pad 1 (for the emulator's 2nd motion sensor)
+        self.on_client = None         # callback() when an emulator connects (to log whether there is gyro)
         self.mac = bytes([0x57, 0x69, 0x69, 0x44, 0x65, 0x63])
 
     def start(self):
-        """Abre el puerto. SIN SO_REUSEADDR: en UDP dejaria compartirlo con otro servidor (p. ej. SteamDeckGyroDSU en 26760)
-        y los emuladores hablarian con el otro sin ningun error. Si esta ocupado se prueban los 9 siguientes."""
+        """Opens the port. WITHOUT SO_REUSEADDR: on UDP it would allow sharing it with another server (e.g. SteamDeckGyroDSU on 26760)
+        and emulators would talk to the other one without any error. If it is busy, the next 9 are tried."""
         self._stop = False
         first = self.requested_port
         last_err = None
@@ -620,34 +661,47 @@ class DSUServer:
                 sock.close()
                 last_err = e
                 if self.log:
-                    self.log.event("APP", "DSU", "Puerto %d ocupado (%s)" % (port, e))
+                    self.log.event("APP", "DSU", "Port %d is busy (%s)" % (port, e))
                 continue
             self.sock, self.port = sock, port
             break
         else:
             if self.log:
-                self.log.event("APP", "DSU", "No se pudo abrir ningun puerto %d-%d: %s" % (first, first + 9, last_err))
+                self.log.event("APP", "DSU", "Could not open any port %d-%d: %s" % (first, first + 9, last_err))
             self.sock = None
             return False
         self.extra_socks = []
+        self.extra_state = {}
+        self._try_extras(first_time=True)
+        self._thread = threading.Thread(target=self._loop, name="dsu", daemon=True)
+        self._thread.start()
+        if self.log:
+            ports = [self.port] + [x.getsockname()[1] for x in self.extra_socks]
+            self.log.event("APP", "DSU", "DSU server on %s, ports %s (use any of them in the emulator)" % (self.bind, ", ".join(map(str, ports))))
+        return True
+
+    def _try_extras(self, first_time=False):
+        """Opens any missing extra ports. Repeated every few seconds: if the program that held 26760 (e.g. the Deck's own
+        DSU gyro) stops, WimotionControlDeck takes it over by itself and emulators pointing there receive the remote."""
+        have = {x.getsockname()[1] for x in self.extra_socks}
         for p in self.extra_ports:
-            if p == self.port:
+            if p == self.port or p in have:
                 continue
             xs = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             try:
                 xs.bind((self.bind, p))
                 xs.settimeout(0.2)
                 self.extra_socks.append(xs)
+                self.extra_state[p] = ("wimotioncontroldeck", "")
+                if self.log and not first_time:
+                    self.log.event("APP", "DSU", "Port %d freed: now served by WimotionControlDeck" % p)
             except OSError as e:
                 xs.close()
-                if self.log:
-                    self.log.event("APP", "DSU", "Puerto extra %d ocupado (%s): lo usa otro programa" % (p, e))
-        self._thread = threading.Thread(target=self._loop, name="dsu", daemon=True)
-        self._thread.start()
-        if self.log:
-            ports = [self.port] + [x.getsockname()[1] for x in self.extra_socks]
-            self.log.event("APP", "DSU", "Servidor DSU en %s, puertos %s (pon cualquiera en el emulador)" % (self.bind, ", ".join(map(str, ports))))
-        return True
+                owner = port_owner(p)
+                desc = "%s (pid %d)" % (owner[1], owner[0]) if owner else "another program"
+                if self.extra_state.get(p, (None, None))[1] != desc and self.log:
+                    self.log.event("APP", "DSU", "Port %d is busy, used by %s (%s): WimotionControlDeck will take it if it is freed" % (p, desc, e))
+                self.extra_state[p] = ("busy", desc)
 
     def stop(self):
         self._stop = True
@@ -665,7 +719,7 @@ class DSUServer:
             self.sock = None
 
     def set_port(self, port):
-        """Cambia el puerto (reinicia el servidor si estaba abierto)."""
+        """Changes the port (restarts the server if it was open)."""
         was = self.sock is not None
         if was:
             self.stop()
@@ -701,6 +755,12 @@ class DSUServer:
 
     def _loop(self):
         while not self._stop:
+            if time.monotonic() - self._extras_t > self.retry_s:
+                self._extras_t = time.monotonic()
+                try:
+                    self._try_extras()
+                except Exception:
+                    pass
             socks = [self.sock] + list(self.extra_socks)
             try:
                 ready, _, _ = select.select(socks, [], [], 0.2)
@@ -717,14 +777,14 @@ class DSUServer:
                     self._handle(data, addr, sk)
                 except Exception as e:
                     if self.log:
-                        self.log.event("APP", "DSU", "paquete no valido: %r" % e)
+                        self.log.event("APP", "DSU", "invalid packet: %r" % e)
 
     def _handle(self, data, addr, sock=None):
         sock = sock or self.sock
         if len(data) < 20 or data[:4] != b"DSUC":
             if self.log and addr not in self._seen_bad:
                 self._seen_bad.add(addr)
-                self.log.event("APP", "DSU", "Llegan datos de %s:%d que no son DSU (otro programa?)" % addr)
+                self.log.event("APP", "DSU", "Receiving data from %s:%d that is not DSU (another program?)" % addr)
             return
         _ver, length, crc, _cid = struct.unpack("<HHII", data[4:16])
         body = bytearray(data)
@@ -750,12 +810,12 @@ class DSUServer:
                     self.client_sock[addr] = sock
                 if new:
                     if self.log:
-                        self.log.event("APP", "DSU", "Cliente conectado: %s:%d (puerto %d)" % (addr + (sock.getsockname()[1],)))
+                        self.log.event("APP", "DSU", "Client connected: %s:%d (port %d)" % (addr + (sock.getsockname()[1],)))
                     if self.on_client:
                         self.on_client()
 
     def push(self, acc, gyro, pad_state, t_us):
-        """acc (g), gyro (pitch, yaw, roll gr/s), pad_state: dict botones. Se envia a los clientes registrados (max ~250/s)."""
+        """acc (g), gyro (pitch, yaw, roll deg/s), pad_state: button dict. Sent to the registered clients (max ~250/s)."""
         if not self.sock:
             return
         now = time.monotonic()
@@ -793,7 +853,7 @@ class DSUServer:
                     pass
 
 
-# ----------------------------------------------------------------------------- controlador
+# ----------------------------------------------------------------------------- controller
 class RemoteState:
     def __init__(self, cfg):
         self.prev_buttons = 0
@@ -829,7 +889,7 @@ class RemoteState:
         self.dsu_gyro = (0.0, 0.0, 0.0)
         self.mp_seen_t = -9.0
         self.shake_on = False
-        self.holds = {}                 # acorde de mantener armado: nombre -> (mascara, segundos, inicio)
+        self.holds = {}                 # armed hold chord: name -> (mask, seconds, start)
         self.nun_shake = wl.ShakeDetector(cfg["shake_threshold"], cfg["shake_reversals"], gap=cfg["shake_gap"])
 
 
@@ -851,17 +911,17 @@ class DeckController:
         self.stick_out = {"lstick": (0, 0), "rstick": (0, 0)}
         self.trig = {"L2": 0, "R2": 0}
         self.down = set()
-        self.held = {}                  # accion -> veces pulsada (dos entradas con el mismo boton no se sueltan a medias)
+        self.held = {}                  # action -> times pressed (two inputs with the same button are not released halfway)
         self.owner_slot = None
         self.wiimotes = []
         self.chord_window = 0.12
         self.on_mp_change = None        # callback(want_mp)
-        self._eden_pulse = None         # [direccion, t0] de la sacudida sintetica en curso
-        self.on_notify = None           # callback(titulo, texto): el plugin lo muestra como notificacion de Steam
-        self.on_open_qam = None         # callback(): el plugin de Decky abre el menu ... (QAM); sin el, se envia Steam + A
-        self._now = None                # hora del ultimo fotograma (misma base de tiempo que los temporizadores)
+        self._eden_pulse = None         # [direction, t0] of the synthetic shake in progress
+        self.on_notify = None           # callback(title, text): the plugin shows it as a Steam notification
+        self.on_open_qam = None         # callback(): the Decky plugin opens the ... menu (QAM); without it, Steam + A is sent
+        self._now = None                # time of the last frame (same time base as the timers)
 
-    # -- dispositivos virtuales
+    # -- virtual devices
     def open_devices(self):
         try:
             self.pad.open()
@@ -869,10 +929,10 @@ class DeckController:
             self.kbd.open()
             self.devices_ok = True
             self.error = ""
-            self.log.event("APP", "UINPUT", "Dispositivos virtuales creados: gamepad Xbox 360 + raton + teclado")
+            self.log.event("APP", "UINPUT", "Virtual devices created: Xbox 360 gamepad + mouse + keyboard")
         except OSError as e:
             self.devices_ok = False
-            self.error = "No se pueden crear dispositivos virtuales (%s). Ejecuta install-udev.sh o: sudo chmod 666 /dev/uinput" % e
+            self.error = "Cannot create virtual devices (%s). Run install-udev.sh or: sudo chmod 666 /dev/uinput" % e
             self.log.event("APP", "ERROR", self.error)
         return self.devices_ok
 
@@ -896,7 +956,7 @@ class DeckController:
     def want_mp(self):
         return bool(self.cfg["gyro_enabled"]) and self.mode != "nunchuk"
 
-    # -- sticks / gatillos
+    # -- sticks / triggers
     def _emit_sticks(self):
         if not self.devices_ok:
             return
@@ -905,24 +965,24 @@ class DeckController:
             d = self.stick_dig[name]
             ax, ay = self.stick_ana[name]
             x = ax + (d["right"] - d["left"])
-            y = ay + (d["up"] - d["down"])            # y positiva = arriba
+            y = ay + (d["up"] - d["down"])            # positive y = up
             n = (x * x + y * y) ** 0.5
             if n > 1.0:
                 x, y = x / n, y / n
-            vx, vy = int(x * 32767), int(-y * 32767)   # el eje Y del gamepad es positivo hacia abajo
+            vx, vy = int(x * 32767), int(-y * 32767)   # the gamepad Y axis is positive downwards
             if (vx, vy) != self.stick_out[name]:
                 self.stick_out[name] = (vx, vy)
                 ev += [(EV_ABS, cx, vx), (EV_ABS, cy, vy)]
         if ev:
             self.pad.emit(ev)
 
-    # -- acciones
+    # -- actions
     HELD_KINDS = ("pad", "trig", "mouse", "key", "hat", "lstick", "rstick")
 
     def do_action(self, action, down):
         if not action or action == "none":
             return
-        if "+" in action:                       # combinacion "A + B": se pulsan y sueltan todos
+        if "+" in action:                       # "A + B" combination: all are pressed and released
             parts = split_action(action)
             for part in (parts if down else reversed(parts)):
                 self.do_action(part, down)
@@ -992,7 +1052,7 @@ class DeckController:
         elif name == "toggle_pointer":
             on = not self.cfg["ir_enabled"]
             self.set_option("ir_enabled", on)
-            self.log.event("APP", "IR", "Puntero IR %s" % ("activado" if on else "desactivado"))
+            self.log.event("APP", "IR", "IR pointer %s" % ("enabled" if on else "disabled"))
             self._rumble_all(0.1 if on else 0.35)
         elif name == "open_qam":
             self.open_qam()
@@ -1005,19 +1065,19 @@ class DeckController:
     SHAKE_GYRO_AXIS = {"up": 0, "down": 0, "forward": 0, "back": 0, "left": 2, "right": 2}
 
     def eden_shake(self, direction, repeat=0.0):
-        """Lanza una sacudida SINTETICA hacia el emulador (DSU): un vaiven fuerte de aceleracion en esa direccion (ejes del
-        mando: x derecha, y punta, z arriba) que se suma a lo que mide el mando. No toca los botones ni el cursor."""
+        """Fires a SYNTHETIC shake towards the emulator (DSU): a strong back-and-forth acceleration in that direction (remote
+        axes: x right, y tip, z up) added on top of what the remote measures. It does not touch the buttons or the cursor."""
         d = self.SHAKE_DIRS.get(direction)
         if d is None:
             return False
-        self._eden_pulse = [d, None, float(repeat), None, direction]   # t0 se toma del siguiente informe (mismo reloj que los datos)
-        self.log.event("APP", "GESTO", "Sacudida sintetica al emulador: %s (%.1f g + %.0f grados/s, %.0f Hz, %d vaivenes%s)" % (
+        self._eden_pulse = [d, None, float(repeat), None, direction]   # t0 is taken from the next report (same clock as the data)
+        self.log.event("APP", "GESTURE", "Synthetic shake to the emulator: %s (%.1f g + %.0f deg/s, %.0f Hz, %d swings%s)" % (
             direction, self.cfg["eden_shake_amp"], self.cfg["eden_shake_gyro"], self.cfg["eden_shake_hz"], int(self.cfg["eden_shake_cycles"]),
-            ", repetida %.0f s" % repeat if repeat else ""))
+            ", repeated %.0f s" % repeat if repeat else ""))
         return True
 
     def _eden_offset(self, now):
-        """(aceleracion extra, giro extra) de la sacudida sintetica en este instante, o None."""
+        """(extra acceleration, extra gyro) of the synthetic shake at this instant, or None."""
         p = self._eden_pulse
         if not p:
             return None
@@ -1028,7 +1088,7 @@ class DeckController:
         tau = now - p[1]
         hz = max(1.0, float(self.cfg["eden_shake_hz"]))
         if tau > int(self.cfg["eden_shake_cycles"]) / hz:
-            if p[2] > 0 and now - p[3] < p[2]:          # prueba continua: otra sacudida seguida
+            if p[2] > 0 and now - p[3] < p[2]:          # continuous test: another shake right after
                 p[1] = now
                 tau = 0.0
             else:
@@ -1041,7 +1101,7 @@ class DeckController:
         return (p[0][0] * v, p[0][1] * v, p[0][2] * v), tuple(g)
 
     def open_qam(self):
-        """Abre el menu ... de Steam: con el plugin de Decky lo hace la interfaz; sin el, Steam + A en el gamepad virtual."""
+        """Opens Steam's ... menu: with the Decky plugin the UI does it; without it, Steam + A on the virtual gamepad."""
         self._rumble_all(0.15)
         cb = self.on_open_qam
         if cb:
@@ -1090,7 +1150,7 @@ class DeckController:
         base = self._now if self._now is not None else time.monotonic()
         rs.timers.append((base + seconds, lambda a=action: self.do_action(a, False)))
 
-    # -- modos, perfiles, opciones
+    # -- modes, profiles, options
     def _led_mask(self):
         return MODE_LEDS[self.mode] | (0b1000 if self.profile != "menus" else 0)
 
@@ -1117,17 +1177,17 @@ class DeckController:
             self.release_all()
             old_mp = self.want_mp()
             self.cfg["mode"] = mode
-            self.log.event("APP", "MODO", "Modo %s" % MODE_TITLES[mode])
+            self.log.event("APP", "MODE", "Mode %s" % MODE_TITLES[mode])
             self._apply_leds()
             if rumble:
                 self._rumble_all(0.12)
             if old_mp != self.want_mp():
                 self._mp_changed()
         save_config(self.cfg)
-        self._notify("WiiDeck", "Modo: %s" % MODE_TITLES[mode])
+        self._notify("WimotionControlDeck", "Mode: %s" % MODE_TITLES[mode])
 
     def quick_profile_ids(self):
-        """Perfiles de acceso rapido (los de + y - en el mando), en el orden de la lista de perfiles."""
+        """Quick-access profiles (those cycled by + and - on the remote), in profile-list order."""
         q = self.cfg.get("quick_profiles", [])
         return [p for p in profile_ids(self.cfg) if p in q]
 
@@ -1157,16 +1217,16 @@ class DeckController:
                 return
             self.release_all()
             self.cfg["profile"] = profile
-            self.log.event("APP", "PERFIL", "Perfil %s" % profile_title(self.cfg, profile))
+            self.log.event("APP", "PROFILE", "Profile %s" % profile_title(self.cfg, profile))
             self._apply_leds()
             if rumble:
                 self._rumble_all(0.1 if profile == "menus" else 0.25)
         save_config(self.cfg)
-        self._notify("WiiDeck", "Perfil: %s" % profile_title(self.cfg, profile))
+        self._notify("WimotionControlDeck", "Profile: %s" % profile_title(self.cfg, profile))
 
     def create_profile(self, name, copy_from=None):
-        """Crea un perfil propio. Con copy_from (id de un perfil existente) es una COPIA de ese perfil, en todos los modos;
-        sin el, en blanco (todo en 'Nada'). Devuelve su id o None."""
+        """Creates a custom profile. With copy_from (id of an existing profile) it is a COPY of that profile, in all modes;
+        without it, blank (everything set to 'None'). Returns its id or None."""
         name = " ".join(str(name or "").split())[:24]
         with self.lock:
             cp = self.cfg.setdefault("custom_profiles", {})
@@ -1189,9 +1249,9 @@ class DeckController:
                     base = default_bindings(pid, m)
                     prof[m] = {k: v for k, v in eff.items() if v != base.get(k)}
                 self.cfg.setdefault("profiles", {})[pid] = prof
-                self.log.event("APP", "PERFIL", "Perfil nuevo: %s (copia de %s)" % (name, profile_title(self.cfg, copy_from)))
+                self.log.event("APP", "PROFILE", "New profile: %s (copy of %s)" % (name, profile_title(self.cfg, copy_from)))
             else:
-                self.log.event("APP", "PERFIL", "Perfil nuevo: %s" % name)
+                self.log.event("APP", "PROFILE", "New profile: %s" % name)
         save_config(self.cfg)
         return pid
 
@@ -1214,7 +1274,7 @@ class DeckController:
             self.cfg["enabled"] = bool(enabled)
             if not enabled:
                 self.release_all()
-            self.log.event("APP", "APP", "WiiDeck %s" % ("activado" if enabled else "desactivado"))
+            self.log.event("APP", "APP", "WimotionControlDeck %s" % ("enabled" if enabled else "disabled"))
             self._rumble_all(0.2 if enabled else 0.08)
         save_config(self.cfg)
 
@@ -1244,8 +1304,8 @@ class DeckController:
         return True
 
     def apply_bindings(self, changes):
-        """Aplica de golpe una lista de (perfil, modo, entrada, valor). Todo o nada: si una no es valida no se aplica ninguna.
-        Guarda una sola vez (el editor acumula cambios y los aplica con el boton APLICAR)."""
+        """Applies a list of (profile, mode, input, value) at once. All or nothing: if one is invalid, none is applied.
+        Saves only once (the editor accumulates changes and applies them with the APPLY button)."""
         parsed = []
         for ch in changes or []:
             try:
@@ -1264,7 +1324,7 @@ class DeckController:
                 user = self.cfg.setdefault("profiles", {}).setdefault(profile, {}).setdefault(mode, {})
                 user[name] = value
         save_config(self.cfg)
-        self.log.event("APP", "BOTONES", "Aplicados %d cambios" % len(parsed))
+        self.log.event("APP", "BUTTONS", "Applied %d changes" % len(parsed))
         return True
 
     def reset_bindings(self, mode=None, profile=None):
@@ -1277,7 +1337,7 @@ class DeckController:
 
     def _mp_changed(self):
         want = self.want_mp()
-        self.log.event("APP", "GYRO", "MotionPlus %s" % ("activado" if want else "desactivado"))
+        self.log.event("APP", "GYRO", "MotionPlus %s" % ("enabled" if want else "disabled"))
         for wm in list(self.wiimotes):
             wm.use_mp = want
             wm.request_reinit()
@@ -1288,7 +1348,7 @@ class DeckController:
         t = time.monotonic()
         for rs in self.states.values():
             rs.gyro.request_calibration(t)
-        self.log.event("APP", "GYRO", "Calibrando giroscopio: deja el mando quieto 1 segundo")
+        self.log.event("APP", "GYRO", "Calibrating gyro: keep the remote still for 1 second")
 
     def apply_filters_config(self):
         for rs in self.states.values():
@@ -1299,7 +1359,7 @@ class DeckController:
                 det.reversals = int(self.cfg["shake_reversals"])
                 det.gap = self.cfg["shake_gap"]
 
-    # -- informes del mando
+    # -- remote reports
     def state_for(self, wm):
         rs = self.states.get(wm.slot)
         if rs is None:
@@ -1322,9 +1382,9 @@ class DeckController:
                 self.owner_slot = wm.slot
             self._run_timers(rs, now)
             acc = tuple((f.acc_raw[i] - wm.acc_zero[i]) / (wm.acc_one[i] - wm.acc_zero[i]) for i in range(3))
-            rs.acc_body = (-acc[0], -acc[1], acc[2])           # cuerpo del mando: x derecha, y punta, z arriba
+            rs.acc_body = (-acc[0], -acc[1], acc[2])           # remote body: x right, y tip, z up
             mag = math.sqrt(acc[0] ** 2 + acc[1] ** 2 + acc[2] ** 2)
-            if mag >= rs.acc_peak or now - rs.acc_peak_t > 2.0:    # pico de aceleracion de los ultimos 2 s (diagnostico)
+            if mag >= rs.acc_peak or now - rs.acc_peak_t > 2.0:    # acceleration peak of the last 2 s (diagnostics)
                 rs.acc_peak, rs.acc_peak_t = mag, now
             mp = wl.decode_mp(f) if getattr(wm, "use_mp", False) else None
             if mp:
@@ -1341,8 +1401,8 @@ class DeckController:
             b = self.bindings()
             self._buttons(wm, rs, f, now, b)
             self._flush_pending(wm, rs, now, b)
-            # el agitado solo se vigila si alguna direccion tiene accion: con todas en "Nada" el mando se agita "de verdad"
-            # (el movimiento llega entero al DSU y el cursor no se congela)
+            # shaking is only watched if some direction has an action: with all set to "None" the remote is shaken "for real"
+            # (the motion reaches DSU intact and the cursor does not freeze)
             rs.shake_on = self._shake_active(b)
             if rs.shake_on:
                 if rs.shake.update(now, self._shake_axes(rs.acc_body)):
@@ -1367,9 +1427,9 @@ class DeckController:
             for _, fn in due:
                 fn()
 
-    # -- botones (los miembros de un acorde esperan 120 ms por si es el acorde)
+    # -- buttons (members of a chord wait 120 ms in case it is the chord)
     def _try_chord(self, rs, f, now, bit):
-        """bit acaba de pulsarse: si completa un acorde con otro boton recien pulsado, lo arma y devuelve True."""
+        """bit was just pressed: if it completes a chord with another just-pressed button, arms it and returns True."""
         for mask, cname, hold in CHORDS:
             if not mask & bit:
                 continue
@@ -1380,7 +1440,7 @@ class DeckController:
             if not (partner in rs.pending or partner in rs.suppressed or (hold != 0.0 and free)):
                 continue
             rs.pending.pop(partner, None)
-            if free:                                     # la cruceta ya estaba pulsada: se suelta, no sigue 2 s empujando
+            if free:                                     # the D-pad was already pressed: release it, so it does not keep pushing for 2 s
                 self.do_action(rs.active.pop(partner), False)
             rs.suppressed.update((bit, partner))
             if hold == 0.0:
@@ -1407,7 +1467,7 @@ class DeckController:
             if bit in CHORD_MEMBERS:
                 if down:
                     rs.pending[bit] = now
-                elif bit in rs.pending:        # toque rapido: pulsa y suelta
+                elif bit in rs.pending:        # quick tap: press and release
                     rs.pending.pop(bit)
                     act = b.get(name)
                     self.do_action(act, True)
@@ -1421,15 +1481,15 @@ class DeckController:
                 self.do_action(action, True)
             elif bit in rs.active:
                 self.do_action(rs.active.pop(bit), False)
-        rs.last_event, rs.last_event_t = "botones %04X" % f.buttons, now
+        rs.last_event, rs.last_event_t = "buttons %04X" % f.buttons, now
 
     def _flush_pending(self, wm, rs, now, b):
-        for cname, (mask, hold, t0) in list(rs.holds.items()):      # acordes de mantener
+        for cname, (mask, hold, t0) in list(rs.holds.items()):      # hold chords
             if (rs.prev_buttons & mask) != mask:
                 del rs.holds[cname]
             elif now - t0 >= hold:
                 del rs.holds[cname]
-                self.log.event("W%d" % (wm.slot + 1), "ACORDE", "%s mantenido %.1f s" % (cname, hold))
+                self.log.event("W%d" % (wm.slot + 1), "CHORD", "%s held %.1f s" % (cname, hold))
                 self._app(cname)
         if not rs.pending:
             return
@@ -1440,14 +1500,14 @@ class DeckController:
                 rs.active[bit] = action
                 self.do_action(action, True)
 
-    # -- sacudida
+    # -- shake
     def _shake_active(self, b):
         return bool(self.cfg["shake_enabled"]) and any(split_action(b.get(k)) for k in SHAKE_INPUTS)
 
     def _shake_axes(self, acc_body):
-        """Cuerpo del mando (x derecha, y punta, z arriba) -> (derecha, otro, arriba) segun como lo sujetes."""
+        """Remote body (x right, y tip, z up) -> (right, other, up) depending on how you hold it."""
         x, y, z = acc_body
-        if self.mode == "horizontal":        # de lado, punta a la izquierda, 1/2 a la derecha: derecha = -y, arriba = x
+        if self.mode == "horizontal":        # sideways, tip to the left, 1/2 on the right: right = -y, up = x
             return (-y, z, x)
         return (x, y, z)
 
@@ -1458,19 +1518,19 @@ class DeckController:
         elif axis == 2:
             name = "ShakeUp" if (sign > 0) != bool(self.cfg["shake_flip_y"]) else "ShakeDown"
         else:
-            return                            # adelante/atras: sin direccion asignable
+            return                            # forward/back: no assignable direction
         action = b.get(name)
         if not split_action(action):
             return
         self.pulse(rs, action, 0.12)
-        self.log.event("W%d" % (wm.slot + 1), "GESTO", "%s -> %s" % (INPUT_LABELS[name], action))
+        self.log.event("W%d" % (wm.slot + 1), "GESTURE", "%s -> %s" % (INPUT_LABELS[name], action))
         rs.last_event, rs.last_event_t = INPUT_LABELS[name].lower(), time.monotonic()
         try:
             wm.rumble(0.1)
         except Exception:
             pass
 
-    # -- puntero IR -> raton relativo
+    # -- IR pointer -> relative mouse
     def _pointer(self, rs, f, now):
         info = rs.pointer.update(f.ir, now)
         if info is None:
@@ -1518,8 +1578,8 @@ class DeckController:
             if rs.nun_shake.update(now, n["acc"]):
                 action = b.get("NunShake")
                 self.pulse(rs, action, 0.12)
-                self.log.event("APP", "GESTO", "Nunchuk agitado -> %s" % action)
-                rs.last_event, rs.last_event_t = "nunchuk agitado", time.monotonic()
+                self.log.event("APP", "GESTURE", "Nunchuk shaken -> %s" % action)
+                rs.last_event, rs.last_event_t = "nunchuk shaken", time.monotonic()
         else:
             rs.nun_shake.lp = None
         if rs.nun_center is None:
@@ -1528,7 +1588,7 @@ class DeckController:
             rs.nun_acc[1] += n["sy"]
             if rs.nun_n >= 15:
                 rs.nun_center = (rs.nun_acc[0] / rs.nun_n, rs.nun_acc[1] / rs.nun_n)
-                self.log.event("APP", "NUNCHUK", "Centro de la palanca: (%.1f, %.1f)" % rs.nun_center)
+                self.log.event("APP", "NUNCHUK", "Stick center: (%.1f, %.1f)" % rs.nun_center)
             return
         dz = self.cfg["nunchuk_deadzone"]
         sx = wl.clamp((n["sx"] - rs.nun_center[0]) / 95.0, -1, 1)
@@ -1561,13 +1621,13 @@ class DeckController:
             rs.nun_z = z
             self.do_action(b.get("NunZ"), z)
 
-    # -- giroscopio: DSU y stick derecho
+    # -- gyro: DSU and right stick
     def _motion(self, rs, wm, now, has_gyro=True):
-        """Acelerometro siempre (balanceo, agitar); giro solo con MotionPlus. Los dos van al DSU."""
+        """Accelerometer always (swaying, shaking); gyro only with MotionPlus. Both go to DSU."""
         preset = "sideways" if self.mode == "horizontal" else "pointer"
         g_in = rs.gyro_dps
         dz = float(self.cfg["gyro_deadzone"])
-        if has_gyro and dz > 0:         # zona muerta suave: quita la deriva lenta sin saltos al empezar a girar
+        if has_gyro and dz > 0:         # soft deadzone: removes slow drift without jumps when rotation starts
             g_in = tuple((abs(v) - dz) * (1 if v > 0 else -1) if abs(v) > dz else 0.0 for v in g_in)
         gain = float(self.cfg["dsu_accel_gain"])
         a_in = tuple(v * gain for v in rs.acc_body) if gain != 1.0 else rs.acc_body
@@ -1608,16 +1668,16 @@ class DeckController:
                 "lx": lx / 32767.0, "ly": -ly / 32767.0, "rx": rx / 32767.0, "ry": -ry / 32767.0}
 
 
-# ----------------------------------------------------------------------------- servicio
+# ----------------------------------------------------------------------------- service
 class AlreadyRunning(Exception):
     pass
 
 
-LOCK_PATH = "/tmp/wiideck.lock"
+LOCK_PATH = "/tmp/wimotioncontroldeck.lock"
 
 
 def free_wiimote_driver(log=None):
-    """Como root: separa el driver del nucleo hid_wiimote de los mandos (se pelea con la lectura directa)."""
+    """As root: detaches the kernel hid_wiimote driver from the remotes (it fights with direct reading)."""
     base = "/sys/bus/hid/drivers/hid-wiimote"
     if os.geteuid() != 0 or not os.path.isdir(base):
         return
@@ -1630,14 +1690,14 @@ def free_wiimote_driver(log=None):
                     with open("/sys/bus/hid/drivers/hid-generic/bind", "w") as f:
                         f.write(name)
                 if log:
-                    log.event("APP", "HID", "hid_wiimote separado de %s" % name)
+                    log.event("APP", "HID", "hid_wiimote detached from %s" % name)
             except OSError as e:
                 if log:
-                    log.event("APP", "HID", "no se pudo separar hid_wiimote de %s: %s" % (name, e))
+                    log.event("APP", "HID", "could not detach hid_wiimote from %s: %s" % (name, e))
 
 
 class DeckService:
-    """Une configuracion, registro, controlador, servidor DSU y mandos. Lo usan la ventana y el plugin de Decky."""
+    """Ties together configuration, log, controller, DSU server and remotes. Used by the window and the Decky plugin."""
 
     def __init__(self, pad=None, mouse=None, kbd=None, use_lock=True):
         self.cfg = None
@@ -1652,7 +1712,7 @@ class DeckService:
         self._overrides = {}
         self._watch_stop = threading.Event()
         self.on_notify = None
-        self.on_open_qam = None          # callback para "Home + Plus" (lo pone el plugin de Decky ANTES de start)
+        self.on_open_qam = None          # callback for "Home + Plus" (set by the Decky plugin BEFORE start)
     WATCH_PERIOD = 1.0
 
     def _take_lock(self):
@@ -1665,7 +1725,7 @@ class DeckService:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             self._lock_fd = fd
         except BlockingIOError:
-            raise AlreadyRunning("Ya hay otra instancia de WiiDeck (el plugin de Decky o la aplicacion).")
+            raise AlreadyRunning("Another instance of WimotionControlDeck is already running (the Decky plugin or the app).")
         except OSError:
             pass
 
@@ -1679,7 +1739,7 @@ class DeckService:
 
     @staticmethod
     def _boot_gap():
-        """CLOCK_BOOTTIME cuenta la suspension y CLOCK_MONOTONIC no: la diferencia crece al despertar."""
+        """CLOCK_BOOTTIME counts suspend time and CLOCK_MONOTONIC does not: the difference grows on wake-up."""
         try:
             return time.clock_gettime(time.CLOCK_BOOTTIME) - time.monotonic()
         except (AttributeError, OSError):
@@ -1693,17 +1753,17 @@ class DeckService:
             while not ev.wait(self.WATCH_PERIOD):
                 gap = self._boot_gap()
                 if gap - last > 3.0 and self.started:
-                    self.log.event("APP", "SUSPENSION", "Despertar tras %.0f s de suspension: se reinicia todo" % (gap - last))
+                    self.log.event("APP", "SUSPEND", "Woke up after %.0f s of suspend: restarting everything" % (gap - last))
                     try:
                         self.restart()
                     except Exception as e:
-                        self.log.event("APP", "ERROR", "reinicio tras suspension: %r" % e)
+                        self.log.event("APP", "ERROR", "restart after suspend: %r" % e)
                     return
                 last = gap
-        threading.Thread(target=run, name="wiideck-watch", daemon=True).start()
+        threading.Thread(target=run, name="wimotioncontroldeck-watch", daemon=True).start()
 
     def restart(self):
-        """Apaga TODO (mandos, dispositivos virtuales, DSU) y lo vuelve a arrancar leyendo la configuracion guardada."""
+        """Shuts EVERYTHING down (remotes, virtual devices, DSU) and starts it again, reading the saved configuration."""
         self.stop(release_lock=False)
         self.start()
 
@@ -1727,8 +1787,8 @@ class DeckService:
             makedirs_owned(LOG_DIR)
         except OSError:
             pass
-        self.log = wl.EventLog(LOG_DIR, "wiideck")
-        self.log.event("APP", "APP", "%s %s iniciado" % (APP_NAME, VERSION))
+        self.log = wl.EventLog(LOG_DIR, "wimotioncontroldeck")
+        self.log.event("APP", "APP", "%s %s started" % (APP_NAME, VERSION))
         free_wiimote_driver(self.log)
         self.dsu = DSUServer(self.cfg["dsu_port"], self.log, extra_ports=(26760, 26761))
         self.dsu.on_client = self._dsu_client_log
@@ -1746,8 +1806,8 @@ class DeckService:
         self._start_watchdog()
 
     def stop(self, release_lock=True):
-        """Apagado COMPLETO: cierra los mandos (con la vibracion apagada), los dispositivos virtuales y el DSU.
-        La configuracion (perfiles, asignaciones, opciones) se guarda y se recupera al volver a arrancar."""
+        """COMPLETE shutdown: closes the remotes (with rumble off), the virtual devices and DSU.
+        The configuration (profiles, bindings, options) is saved and restored on the next start."""
         self._watch_stop.set()
         if not self.started:
             if release_lock:
@@ -1759,7 +1819,7 @@ class DeckService:
             self.ctrl.close_devices()
             self.dsu.stop()
             save_config(self.cfg)
-            self.log.event("APP", "APP", "Cerrando")
+            self.log.event("APP", "APP", "Closing")
             self.log.close()
         finally:
             if release_lock:
@@ -1786,6 +1846,7 @@ class DeckService:
             "gyro_enabled": self.cfg["gyro_enabled"], "dsu_enabled": self.cfg["dsu_enabled"],
             "dsu_clients": self.dsu.client_count if self.dsu else 0,
             "dsu_port": self.dsu.port if (self.dsu and self.dsu.sock) else self.cfg["dsu_port"],
+            "dsu_ports": ({str(p): {"state": v[0], "owner": v[1]} for p, v in self.dsu.extra_state.items()} if self.dsu else {}),
             "dsu_port_wanted": self.cfg["dsu_port"], "dsu_open": bool(self.dsu and self.dsu.sock),
             "dsu_sent": self.dsu.sent if self.dsu else 0,
             "profile_title": profile_title(self.cfg, ctrl.profile),
@@ -1800,21 +1861,44 @@ class DeckService:
             "dsu_invert": self.cfg["dsu_invert"],
         }
 
+    FREEABLE = ("gyro", "dsu")        # only a program whose name or command contains one of these words is stopped
+
+    def free_dsu_port(self, port=26760):
+        """Stops (SIGTERM) the program holding a DSU port, e.g. SteamDeckGyroDSU, so WimotionControlDeck can take it. Only if it looks
+        like a gyro/DSU server: an arbitrary process is never killed. Returns (ok, message)."""
+        own = os.getpid()
+        owner = port_owner(port)
+        if not owner:
+            return False, "Nobody is using port %d" % port
+        pid, name, cmd = owner
+        if pid == own:
+            return False, "Port %d belongs to WimotionControlDeck" % port
+        text = (name + " " + cmd).lower()
+        if not any(k in text for k in self.FREEABLE):
+            return False, "Port %d is used by %s (pid %d) and does not look like a gyro server: not stopping it. Stop it yourself." % (port, name, pid)
+        try:
+            os.kill(pid, 15)
+        except OSError as e:
+            return False, "Could not stop %s (pid %d): %s" % (name, pid, e)
+        if self.log:
+            self.log.event("APP", "DSU", "Stopped %s (pid %d) to free port %d" % (name, pid, port))
+        return True, "Stopped %s (pid %d). WimotionControlDeck will take port %d in a few seconds." % (name, pid, port)
+
     def _dsu_client_log(self):
-        """Un emulador se acaba de conectar al DSU: deja en el log que datos va a recibir."""
+        """An emulator just connected to DSU: logs what data it is going to receive."""
         ctrl = self.ctrl
         rs = ctrl.states.get(ctrl.owner_slot) if ctrl else None
         if rs is None:
-            self.log.event("APP", "DSU", "...pero todavia no hay ningun mando con datos")
+            self.log.event("APP", "DSU", "...but there is no remote with data yet")
             return
         real = ctrl.want_mp()
         if real:
-            msg = "giro real (MotionPlus) + acelerometro"
+            msg = "real gyro (MotionPlus) + accelerometer"
         elif self.cfg["gyro_from_accel"]:
-            msg = "acelerometro + giro APROXIMADO (sin MotionPlus en modo %s)" % ctrl.mode
+            msg = "accelerometer + APPROXIMATE gyro (no MotionPlus in %s mode)" % ctrl.mode
         else:
-            msg = "solo acelerometro (sin MotionPlus en modo %s)" % ctrl.mode
-        self.log.event("APP", "DSU", "Datos que recibe el emulador: " + msg)
+            msg = "accelerometer only (no MotionPlus in %s mode)" % ctrl.mode
+        self.log.event("APP", "DSU", "Data the emulator receives: " + msg)
 
     def _motion_view(self):
         rs = self.ctrl.states.get(self.ctrl.owner_slot)
@@ -1823,7 +1907,7 @@ class DeckService:
         return {"acc": [round(v, 2) for v in rs.dsu_acc], "gyro": [round(v, 1) for v in rs.dsu_gyro], "peak": round(rs.acc_peak, 1)}
 
     def set_option(self, key, value):
-        """Como DeckController.set_option, pero tambien arranca el servidor DSU si se activa con el programa en marcha."""
+        """Like DeckController.set_option, but also starts the DSU server if it is enabled while the program is running."""
         ok = self.ctrl.set_option(key, value)
         if ok and key == "dsu_enabled" and value and self.dsu and self.dsu.sock is None:
             self.dsu.start()

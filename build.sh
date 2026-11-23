@@ -1,8 +1,9 @@
 #!/bin/sh
-# Genera WiiDeck-<arch>.AppImage, WiiSim-<arch>.AppImage y WiiDeck-decky.zip. Necesita conexion a internet.
-#   sh build.sh            -> las AppImage de WiiDeck y WiiSim
-#   sh build.sh wiideck    -> solo WiiDeck
-#   sh build.sh decky      -> el plugin de Decky (necesita node + pnpm): WiiDeck-decky.zip
+# Builds WimotionControlDeck-<arch>.AppImage, WiiSim-<arch>.AppImage and WimotionControlDeck-decky.zip. Needs internet access.
+#   sh build.sh            -> both AppImages (WimotionControlDeck and WiiSim)
+#   sh build.sh wimotioncontroldeck -> WimotionControlDeck AppImage only
+#   sh build.sh wiisim     -> WiiSim AppImage only
+#   sh build.sh decky      -> Decky plugin only (needs node + pnpm): WimotionControlDeck-decky.zip
 set -e
 cd "$(dirname "$0")"
 ARCH="${ARCH:-x86_64}"
@@ -15,19 +16,19 @@ fetch_tool() {
 }
 
 build_decky() {
-  D=decky/WiiDeck
+  D=decky/WimotionControlDeck
   mkdir -p "$D/py_modules"
   cp common/wiilink.py common/deckcore.py "$D/py_modules/"
   (cd "$D" && pnpm install && pnpm build)
-  rm -rf pkg-decky && mkdir -p pkg-decky/WiiDeck
-  cp -r "$D/plugin.json" "$D/main.py" "$D/package.json" "$D/dist" "$D/py_modules" pkg-decky/WiiDeck/
-  rm -f WiiDeck-decky.zip
-  (cd pkg-decky && zip -qr ../WiiDeck-decky.zip WiiDeck)
+  rm -rf pkg-decky && mkdir -p pkg-decky/WimotionControlDeck
+  cp -r "$D/plugin.json" "$D/main.py" "$D/package.json" "$D/dist" "$D/py_modules" pkg-decky/WimotionControlDeck/
+  rm -f WimotionControlDeck-decky.zip
+  (cd pkg-decky && zip -qr ../WimotionControlDeck-decky.zip WimotionControlDeck)
   rm -rf pkg-decky
-  echo "Listo: WiiDeck-decky.zip  (Decky -> Ajustes -> Desarrollador -> Instalar plugin desde ZIP)"
+  echo "Done: WimotionControlDeck-decky.zip  (Decky -> Settings -> Developer -> Install plugin from ZIP)"
 }
 
-build() {   # build <carpeta> <Nombre>
+build() {   # build <folder> <Name>
   APP="$1"; NAME="$2"
   rm -rf "AppDir-$APP"
   mkdir -p "AppDir-$APP/usr/share/$APP"
@@ -38,12 +39,12 @@ build() {   # build <carpeta> <Nombre>
   chmod +x "AppDir-$APP/AppRun"
   ARCH="$ARCH" ./appimagetool --appimage-extract-and-run "AppDir-$APP" "$NAME-$ARCH.AppImage"
   rm -rf "AppDir-$APP"
-  echo "Listo: $NAME-$ARCH.AppImage"
+  echo "Done: $NAME-$ARCH.AppImage"
 }
 
 case "$WHAT" in
   decky)   build_decky ;;
-  wiideck) fetch_tool; build wiideck WiiDeck ;;
+  wimotioncontroldeck) fetch_tool; build wimotioncontroldeck WimotionControlDeck ;;
   wiisim)  fetch_tool; build wiisim WiiSim ;;
-  *) fetch_tool; build wiideck WiiDeck; build wiisim WiiSim ;;
+  *) fetch_tool; build wimotioncontroldeck WimotionControlDeck; build wiisim WiiSim ;;
 esac

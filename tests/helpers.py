@@ -1,13 +1,13 @@
 import os, sys, struct
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "common"))
-sys.path.insert(0, os.path.join(ROOT, "wiideck"))
+sys.path.insert(0, os.path.join(ROOT, "wimotioncontroldeck"))
 sys.path.insert(0, os.path.join(ROOT, "wiisim"))
 import wiilink as wl
 
 
 def make_report(buttons=0, acc=(128, 128, 154), dots=(), ext=(0, 0, 0, 0, 0, 0)):
-    """Construye un informe 0x37 (inverso de parse_data_report). acc en cuentas de 8 bits."""
+    """Builds a 0x37 report (inverse of parse_data_report). acc in 8-bit counts."""
     d = bytearray(22)
     d[0] = 0x37
     d[1] = buttons & 0x1F
@@ -50,7 +50,7 @@ class FakeWm:
         self.acc_zero = [128.0, 128.0, 128.0]
         self.acc_one = [154.0, 154.0, 154.0]
         self.battery = 80
-        self.status_text = "Activo"
+        self.status_text = "Active"
         self.leds = []
         self.rumbles = 0
         self.use_mp = False

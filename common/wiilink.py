@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-wiilink - acceso hidraw y protocolo del Wii Remote (Plus) en Linux, con la Dolphin Bar en modo 4
-(o con un mando Bluetooth que aparezca como hidraw). Solo libreria estandar de Python 3.
+wiilink - hidraw access and Wii Remote (Plus) protocol on Linux, with the Dolphin Bar in mode 4
+(or with a Bluetooth remote that shows up as hidraw). Python 3 standard library only.
 
-Incluye: deteccion de mandos, lectura/escritura de informes (con los tamanos EXACTOS que acepta la barra),
-decodificacion del informe 0x37 (botones + acelerometro + IR basico + extension de 6 bytes),
-puntero IR angular, filtro "1 euro", detector de sacudidas y registro (eventos + CSV).
+Includes: remote detection, report reading/writing (with the EXACT sizes the bar accepts),
+decoding of report 0x37 (buttons + accelerometer + basic IR + 6-byte extension),
+angular IR pointer, "1 euro" filter, shake detector and logging (events + CSV).
 
-  python3 wiilink.py --list      mandos / puertos hidraw encontrados
-  python3 wiilink.py --diag      vuelca lo que llega de cada mando (Ctrl+C para salir)
+  python3 wiilink.py --list      remotes / hidraw ports found
+  python3 wiilink.py --diag      dumps what arrives from each remote (Ctrl+C to quit)
 """
 import errno
 import glob
@@ -32,11 +32,11 @@ BUTTON_NAMES = {BTN_LEFT: "Left", BTN_RIGHT: "Right", BTN_DOWN: "Down", BTN_UP: 
                 BTN_TWO: "Two", BTN_ONE: "One", BTN_B: "B", BTN_A: "A", BTN_MINUS: "Minus", BTN_HOME: "Home"}
 NAME_TO_BTN = {v: k for k, v in BUTTON_NAMES.items()}
 
-IR_FOCAL_PX = 1369.0   # ~41 grados de campo horizontal sobre 1024 px
+IR_FOCAL_PX = 1369.0   # ~41 degrees horizontal field of view over 1024 px
 DEG = math.pi / 180.0
 
 
-# ------------------------------------------------------------------ utilidades
+# ------------------------------------------------------------------ utilities
 def read_text(path):
     try:
         with open(path) as f:
@@ -62,7 +62,7 @@ def wrap_angle(a):
 
 
 def norm_line_angle(a):
-    """Angulo de una recta (sin sentido) en (-90, 90] grados, en radianes."""
+    """Angle of an undirected line in (-90, 90] degrees, in radians."""
     if a > math.pi / 2:
         a -= math.pi
     if a < -math.pi / 2:
@@ -71,7 +71,7 @@ def norm_line_angle(a):
 
 
 class EventLog:
-    """Registro de eventos (texto) y de muestras (CSV). Seguro entre hilos."""
+    """Event log (text) and sample log (CSV). Thread-safe."""
 
     def __init__(self, directory, prefix, csv_header=None):
         self.t0 = time.monotonic()
@@ -112,11 +112,11 @@ class EventLog:
         text = text.replace("\n", " ").replace("\r", " ").strip()
         if not text:
             return
-        self.event("APP", "NOTA", text)
+        self.event("APP", "NOTE", text)
         if self.csv:
             with self.lock:
                 try:
-                    self.csv.write("#NOTA,%.3f,%s\n" % (self.now(), text))
+                    self.csv.write("#NOTE,%.3f,%s\n" % (self.now(), text))
                 except OSError:
                     pass
 
@@ -141,9 +141,9 @@ class EventLog:
                 pass
 
 
-# ------------------------------------------------------------------ filtros y detectores
+# ------------------------------------------------------------------ filters and detectors
 class OneEuro:
-    """Filtro '1 euro': quita el temblor en reposo sin retrasar los movimientos rapidos."""
+    """'1 euro' filter: removes jitter at rest without lagging fast movements."""
 
     def __init__(self, min_cut=1.0, beta=1.5, d_cut=1.0):
         self.min_cut, self.beta, self.d_cut = min_cut, beta, d_cut
@@ -174,11 +174,11 @@ class OneEuro:
 
 class IRPointer:
     """
-    Puntero angular a partir de los puntos IR de la barra (modo basico, hasta 4 puntos, 1024x768).
-    Devuelve los angulos (rad) a los que apunta el eje de la camara respecto al centro de la barra, con el
-    balanceo corregido: no depende de la distancia (como el puntero real de la Wii). Si solo se ve un LED
-    se deduce el centro con la ultima separacion e inclinacion (hasta 1,5 s).
-    El eje y crudo de la camara crece hacia ARRIBA (comprobado con la Dolphin Bar).
+    Angular pointer computed from the bar's IR dots (basic mode, up to 4 dots, 1024x768).
+    Returns the angles (rad) the camera axis points at relative to the center of the bar, with roll
+    corrected: it does not depend on distance (like the real Wii pointer). If only one LED is visible,
+    the center is inferred from the last separation and tilt (for up to 1.5 s).
+    The raw camera y axis grows UPWARD (verified with the Dolphin Bar).
     """
 
     def __init__(self, bar_width=0.20):
@@ -189,7 +189,7 @@ class IRPointer:
         self.last_pair_t = -9.0
 
     def update(self, dots, now):
-        """dots: lista de (x, y) validos. Devuelve dict o None."""
+        """dots: list of valid (x, y). Returns a dict or None."""
         best = 0.0
         pair = None
         for i in range(len(dots)):
@@ -226,8 +226,8 @@ class IRPointer:
         else:
             return None
 
-        u = (cx - 512.0) / IR_FOCAL_PX      # derecha positivo
-        v = (cy - 384.0) / IR_FOCAL_PX      # arriba positivo
+        u = (cx - 512.0) / IR_FOCAL_PX      # right is positive
+        v = (cy - 384.0) / IR_FOCAL_PX      # up is positive
         dist = self.bar_width * IR_FOCAL_PX / best
         if dist < 0.3 or dist > 8.0:
             return None
@@ -242,23 +242,23 @@ class IRPointer:
 
 class ShakeDetector:
     """
-    Detecta sacudidas del mando con el acelerometro (sin giroscopio): inversiones de signo repetidas de la
-    aceleracion dinamica (acel - media lenta) en un eje.
-      threshold: amplitud minima en g; reversals: inversiones necesarias; window: segundos
-    Al completarse una sacudida deja en fired_axis (0, 1, 2) el eje dominante y en fired_sign (+1/-1) el sentido del
-    PRIMER golpe (la aceleracion con la que arranca el gesto: hacia donde "lanzas" el mando).
+    Detects remote shakes using the accelerometer (no gyro): repeated sign reversals of the
+    dynamic acceleration (accel - slow average) on one axis.
+      threshold: minimum amplitude in g; reversals: reversals needed; window: seconds
+    When a shake completes, it leaves the dominant axis in fired_axis (0, 1, 2) and the direction of the
+    FIRST stroke in fired_sign (+1/-1) (the acceleration the gesture starts with: the way you "throw" the remote).
     """
 
     def __init__(self, threshold=1.0, reversals=4, window=0.8, cooldown=1.0, gap=0.4):
         self.threshold, self.reversals, self.window, self.cooldown = threshold, reversals, window, cooldown
-        self.gap = gap        # segundos maximos entre dos cambios de sentido seguidos
+        self.gap = gap        # max seconds between two consecutive direction changes
         self.lp = None
         self.last_t = None
         self.sign = [0, 0, 0]
         self.last_rev = [-9.0] * 3
         self.count = [0] * 3
         self.cool_until = -1.0
-        self.activity_until = -1.0   # "hay movimiento brusco": el puntero se congela
+        self.activity_until = -1.0   # "abrupt movement in progress": the pointer freezes
         self.peak = 0.0
         self.first_sign = [0, 0, 0]
         self.amp = [0.0, 0.0, 0.0]
@@ -266,14 +266,14 @@ class ShakeDetector:
         self.fired_sign = 0
 
     def update(self, t, acc):
-        """acc: (x, y, z) en g. Devuelve True cuando se completa una sacudida."""
+        """acc: (x, y, z) in g. Returns True when a shake completes."""
         if self.lp is None:
             self.lp = list(acc)
             self.last_t = t
             return False
         dt = clamp(t - self.last_t, 0.001, 0.1)
         self.last_t = t
-        a = 1.0 - math.exp(-dt / (0.3 * max(1.0, self.gap / 0.4)))   # agitado lento: media mas lenta
+        a = 1.0 - math.exp(-dt / (0.3 * max(1.0, self.gap / 0.4)))   # slow shaking: slower average
         dyn = [acc[i] - self.lp[i] for i in range(3)]
         for i in range(3):
             self.lp[i] += (acc[i] - self.lp[i]) * a
@@ -314,7 +314,7 @@ class ShakeDetector:
         return self.last_t is not None and self.last_t < self.activity_until
 
 
-# ------------------------------------------------------------------ descubrimiento
+# ------------------------------------------------------------------ discovery
 class HidInfo:
     def __init__(self, path, port, bus, vid, pid, syspath):
         self.path, self.port, self.bus, self.vid, self.pid, self.syspath = path, port, bus, vid, pid, syspath
@@ -324,7 +324,7 @@ class HidInfo:
 
 
 def list_wiimote_hidraws():
-    """Nodos hidraw de mandos Wii: Dolphin Bar (USB, un puerto por interfaz) o mandos Bluetooth."""
+    """hidraw nodes of Wii remotes: Dolphin Bar (USB, one port per interface) or Bluetooth remotes."""
     out = []
     for node in sorted(glob.glob(os.path.join(SYS, "class/hidraw/hidraw*")),
                        key=lambda p: int(re.sub(r"\D", "", os.path.basename(p)) or 0)):
@@ -344,16 +344,16 @@ def list_wiimote_hidraws():
 
 
 def access_problems():
-    """Lista de problemas de permisos (para ensenar al usuario como arreglarlos)."""
+    """List of permission problems (to show the user how to fix them)."""
     problems = []
     infos = list_wiimote_hidraws()
     for i in infos:
         if not os.access(i.path, os.R_OK | os.W_OK):
-            problems.append("sin permiso de lectura/escritura en %s" % i.path)
+            problems.append("no read/write permission on %s" % i.path)
     return problems
 
 
-# ------------------------------------------------------------------ dispositivo
+# ------------------------------------------------------------------ device
 class HidrawDevice:
     def __init__(self, path):
         self.path = path
@@ -376,7 +376,7 @@ class HidrawDevice:
 
 
 class Frame:
-    """Informe 0x37 decodificado."""
+    """Decoded 0x37 report."""
     __slots__ = ("t", "raw", "buttons", "acc_raw", "ir", "ext", "cls", "is_mp", "mp", "nun", "ext_flag")
 
     def __init__(self):
@@ -387,7 +387,7 @@ class Frame:
 
 
 def parse_data_report(d, t=None):
-    """Decodifica un informe 0x37 (22 bytes). Devuelve Frame o None."""
+    """Decodes a 0x37 report (22 bytes). Returns a Frame or None."""
     if len(d) < 22 or d[0] != 0x37:
         return None
     f = Frame()
@@ -415,7 +415,7 @@ def parse_data_report(d, t=None):
 
 
 def decode_mp(f):
-    """Si el informe es una trama de MotionPlus: (yaw, roll, pitch, slow_yaw, slow_roll, slow_pitch, ext_flag)."""
+    """If the report is a MotionPlus frame: (yaw, roll, pitch, slow_yaw, slow_roll, slow_pitch, ext_flag)."""
     d = f.raw
     ext = f.ext
     if all(b == 0 for b in ext) or all(b == 0xFF for b in ext):
@@ -429,7 +429,7 @@ def decode_mp(f):
 
 
 def decode_nunchuk_plain(f):
-    """Nunchuk como extension normal (sin MotionPlus). Devuelve dict o None."""
+    """Nunchuk as a normal extension (no MotionPlus). Returns a dict or None."""
     d = f.raw
     ext = f.ext
     if all(b == 0 for b in ext) or all(b == 0xFF for b in ext):
@@ -442,12 +442,12 @@ def decode_nunchuk_plain(f):
             "z": (d[21] & 1) == 0, "c": (d[21] & 2) == 0}
 
 
-# ------------------------------------------------------------------ mando
+# ------------------------------------------------------------------ remote
 class Wiimote:
     """
-    Un Wii Remote en un nodo hidraw. Hilo lector + hilo supervisor (conexion, configuracion, reconexion).
-      use_mp          activa el MotionPlus (modo independiente 0x00); si no, el Nunchuk se lee como extension normal
-      on_frame(wm,f)  se llama desde el hilo lector con cada informe 0x37
+    One Wii Remote on one hidraw node. Reader thread + supervisor thread (connection, setup, reconnection).
+      use_mp          enables MotionPlus (standalone mode 0x00); otherwise the Nunchuk is read as a normal extension
+      on_frame(wm,f)  called from the reader thread with every 0x37 report
     """
 
     def __init__(self, info, slot, use_mp=False, log=None, on_frame=None, ir=True):
@@ -462,7 +462,7 @@ class Wiimote:
         self.failed = False
         self.battery = -1
         self.ext_flag = False
-        self.status_text = "Iniciando..."
+        self.status_text = "Starting..."
         self.acc_zero = [128.0, 128.0, 128.0]
         self.acc_one = [154.0, 154.0, 154.0]
         self.eep_sig = ""
@@ -482,15 +482,15 @@ class Wiimote:
         self._threads = []
         self.frames_seen = 0
 
-    # ---- registro
+    # ---- logging
     def _log(self, cat, msg):
         if self.log:
             self.log.event("W%d" % (self.slot + 1), cat, msg)
 
-    # ---- E/S
+    # ---- I/O
     def start(self):
         self.dev = HidrawDevice(self.info.path)
-        self._log("HID", "Abierto %s (puerto %s)" % (self.info.path, self.info.port))
+        self._log("HID", "Opened %s (port %s)" % (self.info.path, self.info.port))
         t1 = threading.Thread(target=self._reader, name="wm-read-%d" % self.slot, daemon=True)
         t2 = threading.Thread(target=self._supervisor, name="wm-sup-%d" % self.slot, daemon=True)
         self._threads = [t1, t2]
@@ -504,19 +504,19 @@ class Wiimote:
                 t.join(1.5)
         if self.dev:
             try:
-                self.dev.write([0x11, 0x00])          # vibracion y LEDs apagados: que no quede el mando vibrando al soltarlo
+                self.dev.write([0x11, 0x00])          # rumble and LEDs off: so the remote is not left rumbling when released
             except OSError:
                 pass
             self.dev.close()
 
     def send(self, data):
-        """Escribe un informe de salida con su tamano natural (la barra rechaza tamanos distintos)."""
+        """Writes an output report at its natural size (the bar rejects other sizes)."""
         try:
             self.dev.write(data)
             return True
         except OSError as e:
             if e.errno not in (errno.EIO, errno.EPIPE, errno.ENODEV, errno.EAGAIN, errno.EPROTO, errno.ETIMEDOUT):
-                self._log("ERROR", "escritura: %s" % e)
+                self._log("ERROR", "write: %s" % e)
             if e.errno == errno.ENODEV:
                 self.failed = True
             return False
@@ -548,8 +548,8 @@ class Wiimote:
             self._rumble_thread.start()
 
     def _rumble_off(self):
-        """Apaga la vibracion al vencer el plazo (que otra vibracion pueda ampliar). Si el informe de apagar se pierde
-        (EAGAIN/EIO justo al reconectar) se REINTENTA: antes quedaba el mando vibrando para siempre."""
+        """Turns rumble off when the deadline expires (another rumble can extend it). If the turn-off report is lost
+        (EAGAIN/EIO right on reconnect) it is RETRIED: previously the remote was left rumbling forever."""
         while not self._stop:
             wait = self._rumble_until - time.monotonic()
             if wait > 0:
@@ -564,7 +564,7 @@ class Wiimote:
     def request_reinit(self):
         self._reinit_req = True
 
-    # ---- hilos
+    # ---- threads
     def _reader(self):
         while not self._stop:
             try:
@@ -572,7 +572,7 @@ class Wiimote:
             except OSError as e:
                 if e.errno in (errno.ENODEV, errno.EIO):
                     self.failed = True
-                    self._log("HID", "Dispositivo desconectado: %s" % e)
+                    self._log("HID", "Device disconnected: %s" % e)
                     return
                 time.sleep(0.05)
                 continue
@@ -590,10 +590,10 @@ class Wiimote:
                         self._rate_n = 0
                         self._rate_t = self.last_rx
                     self.connected = True
-                    if self.on_frame and self.initialized:      # mientras se reconfigura (p. ej. MotionPlus si/no) no se entregan tramas
+                    if self.on_frame and self.initialized:      # while reconfiguring (e.g. MotionPlus on/off) no frames are delivered
                         try:
                             self.on_frame(self, f)
-                        except Exception as ex:  # un error de procesado no debe matar la lectura
+                        except Exception as ex:  # a processing error must not kill the reader
                             self._log("ERROR", "on_frame: %r" % ex)
             elif rid == 0x20:
                 self._handle_status(d)
@@ -606,7 +606,7 @@ class Wiimote:
         ext = bool(d[3] & 0x02)
         self.battery = min(100, d[6] * 100 // 200)
         if ext != self.ext_flag or not self.initialized:
-            self._log("STATUS", "extension=%s IR=%s LED=%d bateria=%d%%" % (ext, bool(d[3] & 0x08), d[3] >> 4, self.battery))
+            self._log("STATUS", "extension=%s IR=%s LED=%d battery=%d%%" % (ext, bool(d[3] & 0x08), d[3] >> 4, self.battery))
         if ext and not self.ext_flag and self.initialized and not self.use_mp:
             self._ext_init_req = True
         self.ext_flag = ext
@@ -637,10 +637,10 @@ class Wiimote:
                     self._status_evt.clear()
                     self.send([0x15, 0x00])
                     if self._status_evt.wait(0.8):
-                        self.status_text = "Configurando..."
+                        self.status_text = "Configuring..."
                         self._setup()
                     else:
-                        self.status_text = "Esperando mando (pulsa un boton)"
+                        self.status_text = "Waiting for remote (press a button)"
                         self.connected = False
                         time.sleep(0.3)
                 else:
@@ -652,12 +652,12 @@ class Wiimote:
                     if idle > 3.0:
                         self.initialized = False
                         self.connected = False
-                        self.status_text = "Mando desconectado"
-                        self._log("CONN", "Sin informes durante 3 s: mando desconectado")
+                        self.status_text = "Remote disconnected"
+                        self._log("CONN", "No reports for 3 s: remote disconnected")
                     else:
                         now = time.monotonic()
                         if now >= self._rumble_until and now - self._keepalive_t > 1.5:
-                            self._keepalive_t = now      # seguro: si una vibracion se quedo encendida, esto la apaga
+                            self._keepalive_t = now      # safety: if a rumble got stuck on, this turns it off
                             self.send([0x11, self._led << 4])
                         time.sleep(0.1)
             except Exception as ex:
@@ -670,20 +670,20 @@ class Wiimote:
         time.sleep(0.06)
         self.write_reg(0xA400FB, [0x00])
         time.sleep(0.15)
-        self._log("INIT", "Extension inicializada como normal (Nunchuk directo)")
+        self._log("INIT", "Extension initialized as normal (direct Nunchuk)")
 
     def _setup(self):
         self.initialized = False
-        self._log("INIT", "Configurando mando (extension segun estado: %s)" % self.ext_flag)
+        self._log("INIT", "Configuring remote (extension per status: %s)" % self.ext_flag)
         if self.ext_flag or not self.use_mp:
-            # desactiva un MotionPlus que quedara activo y deja la extension (Nunchuk) como normal
+            # disables a MotionPlus that was left active and sets the extension (Nunchuk) to normal
             self._init_extension_plain()
         self.set_led(self._led)
         time.sleep(0.03)
         self._cal_evt.clear()
         self.send([0x17, 0x00, 0x00, 0x00, 0x16, 0x00, 0x0A])
         got = self._cal_evt.wait(0.5)
-        self._log("INIT", "Calibracion EEPROM %s: cero=%s 1g=%s" % ("recibida" if got else "NO recibida", self.acc_zero, self.acc_one))
+        self._log("INIT", "EEPROM calibration %s: zero=%s 1g=%s" % ("received" if got else "NOT received", self.acc_zero, self.acc_one))
         if self.want_ir:
             self.send([0x13, 0x04]); time.sleep(0.03)
             self.send([0x1A, 0x04]); time.sleep(0.03)
@@ -695,16 +695,16 @@ class Wiimote:
         if self.use_mp:
             self.write_reg(0xA600F0, [0x55]); time.sleep(0.06)
             self.write_reg(0xA600FE, [0x00]); time.sleep(0.3)
-            self._log("INIT", "MotionPlus activado (modo independiente)")
+            self._log("INIT", "MotionPlus enabled (standalone mode)")
         self.set_report_mode()
         self.last_rx = time.monotonic()
         self.initialized = True
         self.status_text = "Activo"
-        self._log("INIT", "Configuracion terminada, informes 0x37 pedidos")
+        self._log("INIT", "Setup finished, 0x37 reports requested")
 
 
 class Manager:
-    """Busca mandos cada 1,5 s y crea un Wiimote por cada nodo hidraw (puerto de la barra = jugador)."""
+    """Scans for remotes every 1.5 s and creates one Wiimote per hidraw node (bar port = player)."""
 
     def __init__(self, log=None, on_frame=None, use_mp=False, ir=True):
         self.log, self.on_frame, self.use_mp, self.ir = log, on_frame, use_mp, ir
@@ -745,7 +745,7 @@ class Manager:
                 self._scan()
             except Exception as ex:
                 if self.log:
-                    self.log.event("APP", "ERROR", "escaneo: %r" % ex)
+                    self.log.event("APP", "ERROR", "scan: %r" % ex)
             for _ in range(15):
                 if self._stop:
                     return
@@ -759,7 +759,7 @@ class Manager:
             for path, w in list(self.devices.items()):
                 if w.failed:
                     if self.log:
-                        self.log.event("APP", "HID", "Retirado mando de %s" % path)
+                        self.log.event("APP", "HID", "Removed remote from %s" % path)
                     w.stop()
                     del self.devices[path]
             known = set(self.devices)
@@ -767,7 +767,7 @@ class Manager:
             if info.path in known:
                 continue
             if not os.access(info.path, os.R_OK | os.W_OK):
-                self.problems.append("sin permiso en %s" % info.path)
+                self.problems.append("no permission on %s" % info.path)
                 continue
             with self.lock:
                 if info.port is not None and 1 <= info.port <= 4:
@@ -780,12 +780,12 @@ class Manager:
             try:
                 wm.start()
             except OSError as e:
-                self.problems.append("no se pudo abrir %s: %s" % (info.path, e))
+                self.problems.append("could not open %s: %s" % (info.path, e))
                 continue
             with self.lock:
                 self.devices[info.path] = wm
             if self.log:
-                self.log.event("APP", "HID", "Mando asignado al jugador %d (%s)" % (slot + 1, info.path))
+                self.log.event("APP", "HID", "Remote assigned to player %d (%s)" % (slot + 1, info.path))
 
 
 # ------------------------------------------------------------------ CLI
@@ -793,10 +793,10 @@ def _main():
     if "--list" in sys.argv:
         infos = list_wiimote_hidraws()
         if not infos:
-            print("No se encontro ningun nodo hidraw de Wii Remote / Dolphin Bar (057e:0306/0330).")
+            print("No Wii Remote / Dolphin Bar hidraw node found (057e:0306/0330).")
         for i in infos:
             ok = os.access(i.path, os.R_OK | os.W_OK)
-            print("%s  puerto=%s  bus=%s  permisos=%s" % (i.path, i.port, i.bus, "OK" if ok else "FALTAN (ejecuta install-udev.sh)"))
+            print("%s  port=%s  bus=%s  permissions=%s" % (i.path, i.port, i.bus, "OK" if ok else "MISSING (run install-udev.sh)"))
         return
     if "--diag" in sys.argv:
         log = EventLog(os.path.expanduser("~/.local/share/wiilink"), "diag")

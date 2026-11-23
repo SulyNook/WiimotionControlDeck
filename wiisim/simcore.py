@@ -1,7 +1,7 @@
 """
-simcore - procesado de un Wii Remote para el simulador: orientacion (giroscopio MotionPlus + acelerometro),
-posicion (IR + arco de brazo), puntero, gestos y Nunchuk directo. Portado de la version v0.5 de Windows.
-Ejes del cuerpo y del mundo: X = derecha, Y = adelante (hacia la barra), Z = arriba. La barra esta en el origen.
+simcore - processing of one Wii Remote for the simulator: orientation (MotionPlus gyro + accelerometer),
+position (IR + arm arc), pointer, gestures and direct Nunchuk. Ported from the Windows v0.5 version.
+Body and world axes: X = right, Y = forward (toward the bar), Z = up. The bar is at the origin.
 """
 import math
 import time
@@ -25,7 +25,7 @@ DEFAULT_SIM_CONFIG = {
 }
 
 
-# ---------------------------------------------------------------- vectores y cuaterniones (tuplas)
+# ---------------------------------------------------------------- vectors and quaternions (tuples)
 def vadd(a, b): return (a[0] + b[0], a[1] + b[1], a[2] + b[2])
 def vsub(a, b): return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
 def vmul(a, k): return (a[0] * k, a[1] * k, a[2] * k)
@@ -63,7 +63,7 @@ def qaxis(axis, angle):
 
 
 def qrot(q, v):
-    """Rota el vector v por el cuaternion q (cuerpo -> mundo)."""
+    """Rotates vector v by quaternion q (body -> world)."""
     w, x, y, z = q
     # v' = v + 2w(u x v) + 2 u x (u x v)
     u = (x, y, z)
@@ -98,9 +98,9 @@ def smooth(x):
     return x * x * (3 - 2 * x)
 
 
-# ---------------------------------------------------------------- gestos
+# ---------------------------------------------------------------- gestures
 class Gestures:
-    """Golpe/tajo, agitar, sacudida seca / empuje y tiron lento. Ejes del cuerpo: X derecha, Y adelante, Z arriba."""
+    """Swing/slash, shake, sharp jerk / push and slow pull. Body axes: X right, Y forward, Z up."""
 
     def __init__(self, who):
         self.who = who
@@ -134,7 +134,7 @@ class Gestures:
 
     @staticmethod
     def _axis(k):
-        return ("lateral", "adelante-atras", "vertical")[k]
+        return ("lateral", "forward-back", "vertical")[k]
 
     def _shake(self, t, dyn, thr):
         for k in range(3):
@@ -171,8 +171,8 @@ class Gestures:
             n = self.shake_max
             self.rev = [0, 0, 0]
             self.sign = [0, 0, 0]
-            return ("AGITAR x%d" % (n // 2),
-                    "%s AGITAR: %d inversiones, %.1f Hz, eje %s, pico %.1f g, %.2f s" % (
+            return ("SHAKE x%d" % (n // 2),
+                    "%s SHAKE: %d reversals, %.1f Hz, axis %s, peak %.1f g, %.2f s" % (
                         self.who, n, (n / 2.0) / dur, self._axis(self.shake_axis), self.shake_peak, dur))
         return None
 
@@ -193,12 +193,12 @@ class Gestures:
             ax, ay, az = abs(self.jerk_dir[0]), abs(self.jerk_dir[1]), abs(self.jerk_dir[2])
             d = self.jerk_dir
             if ay >= ax and ay >= az:
-                what = "EMPUJE hacia delante" if d[1] > 0 else "TIRON hacia atras"
+                what = "PUSH forward" if d[1] > 0 else "PULL back"
             elif ax >= az:
-                what = "SACUDIDA seca a la derecha" if d[0] > 0 else "SACUDIDA seca a la izquierda"
+                what = "sharp JERK to the right" if d[0] > 0 else "sharp JERK to the left"
             else:
-                what = "SACUDIDA seca hacia arriba" if d[2] > 0 else "SACUDIDA seca hacia abajo"
-            return (what, "%s %s: pico %.1f g, %.2f s" % (self.who, what, self.jerk_peak, dur))
+                what = "sharp JERK upward" if d[2] > 0 else "sharp JERK downward"
+            return (what, "%s %s: peak %.1f g, %.2f s" % (self.who, what, self.jerk_peak, dur))
         return None
 
     def _pull(self, t, dt, dyn, gm):
@@ -226,11 +226,11 @@ class Gestures:
         dur = (t if self.pull_low == 0.0 else self.pull_low) - self.pull_t0
         if dur < 0.30:
             return None
-        what = "EMPUJE lento hacia delante" if self.pull_sign > 0 else "TIRON lento hacia atras"
-        return (what, "%s %s: pico %.1f g, %.2f s, dv ~%.1f m/s" % (self.who, what, self.pull_peak, dur, self.pull_dv))
+        what = "slow PUSH forward" if self.pull_sign > 0 else "slow PULL back"
+        return (what, "%s %s: peak %.1f g, %.2f s, dv ~%.1f m/s" % (self.who, what, self.pull_peak, dur, self.pull_dv))
 
     def update_remote(self, t, dt, dyn_body, gyro_dps):
-        """dyn_body: aceleracion lineal (g) en ejes del mando; gyro_dps: (pitch+arriba, roll+derecha, yaw+izquierda)."""
+        """dyn_body: linear acceleration (g) in remote axes; gyro_dps: (pitch+up, roll+right, yaw+left)."""
         ev = None
         gm = vlen(gyro_dps)
         if not self.swing:
@@ -261,16 +261,16 @@ class Gestures:
                 dom = max(ax, ay, az)
                 if self.swing_peak >= 300 and dur >= 0.05 and dom > 25:
                     if az >= ax and az >= ay:
-                        what = "hacia la izquierda" if A[2] > 0 else "hacia la derecha"
+                        what = "to the left" if A[2] > 0 else "to the right"
                         if ax > 0.6 * az:
-                            what = ("izquierda" if A[2] > 0 else "derecha") + ("-arriba (diagonal)" if A[0] > 0 else "-abajo (diagonal)")
+                            what = ("left" if A[2] > 0 else "right") + ("-up (diagonal)" if A[0] > 0 else "-down (diagonal)")
                     elif ax >= ay:
-                        what = "hacia arriba" if A[0] > 0 else "hacia abajo"
+                        what = "upward" if A[0] > 0 else "downward"
                         if az > 0.6 * ax:
-                            what = ("arriba" if A[0] > 0 else "abajo") + ("-izquierda (diagonal)" if A[2] > 0 else "-derecha (diagonal)")
+                            what = ("up" if A[0] > 0 else "down") + ("-left (diagonal)" if A[2] > 0 else "-right (diagonal)")
                     else:
-                        what = "giro de muneca a la derecha" if A[1] > 0 else "giro de muneca a la izquierda"
-                    ev = ("GOLPE " + what, "%s GOLPE %s: pico %.0f gr/s, giro (pitch %.0f, roll %.0f, yaw %.0f) en %.2f s" % (
+                        what = "wrist twist to the right" if A[1] > 0 else "wrist twist to the left"
+                    ev = ("SWING " + what, "%s SWING %s: peak %.0f deg/s, rotation (pitch %.0f, roll %.0f, yaw %.0f) in %.2f s" % (
                         self.who, what, self.swing_peak, A[0], A[1], A[2], dur))
         sh = self._shake(t, dyn_body, 0.7)
         ev = ev or sh
@@ -285,9 +285,9 @@ class Gestures:
         return sh or jk
 
 
-# ---------------------------------------------------------------- posicion
+# ---------------------------------------------------------------- position
 class PositionEstimator:
-    """Posicion de la camara IR (m): con IR, medida absoluta; sin IR, arco de muneca/brazo segun la orientacion."""
+    """Position of the IR camera (m): with IR, an absolute measurement; without IR, a wrist/arm arc driven by orientation."""
     WRIST = 0.12
 
     def __init__(self):
@@ -342,14 +342,14 @@ class PositionEstimator:
         self.home = vlerp(self.home, m, 1.0 - math.exp(-dt / 15.0))
 
 
-# ---------------------------------------------------------------- mando simulado
+# ---------------------------------------------------------------- simulated remote
 class SimRemote:
     def __init__(self, cfg, log, slot):
         self.cfg, self.log, self.slot = cfg, log, slot
         self.q = QI
         self.need_init = True
         self.est = PositionEstimator()
-        self.gest_remote = Gestures("Mando")
+        self.gest_remote = Gestures("Remote")
         self.gest_nun = Gestures("Nunchuk")
         self.pointer = wl.IRPointer()
         self.oe_x = wl.OneEuro(1.0, 1.5, 1.0)
@@ -403,14 +403,14 @@ class SimRemote:
         self.snapshot = {"connected": False}
         self.trail = []
 
-    # ---- peticiones del usuario
+    # ---- user requests
     def request_calibrate(self):
         self.calib_req = True
-        self._log("USER", "Calibrar giroscopio solicitado")
+        self._log("USER", "Gyro calibration requested")
 
     def request_recenter(self):
         self.recenter_req = True
-        self._log("USER", "Centrar yaw solicitado")
+        self._log("USER", "Yaw recenter requested")
 
     def _log(self, cat, msg):
         if self.log:
@@ -419,7 +419,7 @@ class SimRemote:
     def _gesture(self, ev, t):
         if ev:
             self.last_gesture, self.last_gesture_t, self.burst_until = ev[0], t, t + 0.4
-            self._log("GESTO", ev[1])
+            self._log("GESTURE", ev[1])
 
     def rotate_yaw(self, delta):
         self.q = qnorm(qmul(qaxis((0.0, 0.0, 1.0), delta), self.q))
@@ -431,7 +431,7 @@ class SimRemote:
         psi = math.atan2(f[0], f[1])
         self.rotate_yaw(psi)
 
-    # ---- informe
+    # ---- report
     def on_frame(self, wm, f):
         cfg = self.cfg
         t = f.t
@@ -445,7 +445,7 @@ class SimRemote:
             self.rate = self._rate_n / (t - self._rate_t)
             self._rate_n, self._rate_t = 0, t
 
-        # botones
+        # buttons
         if f.buttons != self.prev_buttons:
             changed = f.buttons ^ self.prev_buttons
             for bit, name in wl.BUTTON_NAMES.items():
@@ -455,14 +455,14 @@ class SimRemote:
                 self.recenter_req = True
             self.prev_buttons = f.buttons
 
-        # acelerometro
+        # accelerometer
         gs = [(f.acc_raw[k] - wm.acc_zero[k]) / (wm.acc_one[k] - wm.acc_zero[k]) for k in range(3)]
         acc_raw = (gs[0], gs[1], gs[2]) if cfg["invert_accel_xy"] else (-gs[0], -gs[1], gs[2])
         mag_raw = vlen(acc_raw)
         acc = vmul(acc_raw, self.g_norm)
         clip = any(v <= 1 or v >= 254 for v in f.acc_raw)
 
-        # extension: MotionPlus (independiente) o Nunchuk directo
+        # extension: MotionPlus (standalone) or direct Nunchuk
         mp = None if wm.use_mp is False else wl.decode_mp(f)
         nun_frame = (not wm.use_mp) and wl.decode_nunchuk_plain(f)
         if mp:
@@ -480,11 +480,11 @@ class SimRemote:
             if self.calib_req:
                 self.calib_req, self.calib_active, self.calib_n, self.calib_t0 = False, True, 0, t
                 self.calib_sum, self.calib_sq = [0.0] * 3, [0.0] * 3
-                self._log("CAL", "Calibrando giroscopio: no muevas el mando")
+                self._log("CAL", "Calibrating gyro: do not move the remote")
             if self.calib_active:
                 if t - self.calib_t0 > 12:
                     self.calib_active = False
-                    self._log("CAL", "Calibracion cancelada: el mando no estuvo quieto 12 s")
+                    self._log("CAL", "Calibration cancelled: the remote was not still for 12 s")
                 elif self.last_all_slow:
                     for k in range(3):
                         self.calib_sum[k] += raw[k]
@@ -496,13 +496,13 @@ class SimRemote:
                             mean = self.calib_sum[k] / self.calib_n
                             std = max(std, math.sqrt(max(0.0, self.calib_sq[k] / self.calib_n - mean * mean)))
                         if std > 6.0:
-                            self._log("CAL", "Calibracion descartada (ruido %.1f > 6): se repite" % std)
+                            self._log("CAL", "Calibration discarded (noise %.1f > 6): retrying" % std)
                             self.calib_n, self.calib_sum, self.calib_sq = 0, [0.0] * 3, [0.0] * 3
                         else:
                             for k in range(3):
                                 self.zero_slow[k] = self.zero_fast[k] = self.calib_sum[k] / self.calib_n
                             self.calib_active = False
-                            self._log("CAL", "Giroscopio calibrado: cero=%s ruido=%.1f" % ([round(z, 1) for z in self.zero_slow], std))
+                            self._log("CAL", "Gyro calibrated: zero=%s noise=%.1f" % ([round(z, 1) for z in self.zero_slow], std))
                 else:
                     self.calib_n, self.calib_sum, self.calib_sq = 0, [0.0] * 3, [0.0] * 3
             for k in range(3):
@@ -511,7 +511,7 @@ class SimRemote:
                 dps[k] = (raw[k] - zero) * scale
         gyro_mag = vlen(dps)
 
-        # reposo (v0.5: media cercana a cero; "rest_fix": por estabilidad de las lecturas)
+        # rest (v0.5: average close to zero; "rest_fix": by reading stability)
         la = 1.0 - math.exp(-dt / 0.25)
         dev_now = math.sqrt(sum((dps[k] - self.g_lp[k]) ** 2 for k in range(3)))
         self.g_dev += (dev_now - self.g_dev) * la
@@ -541,22 +541,22 @@ class SimRemote:
             if self.mag_n >= 300:
                 new_g = wl.clamp(1.0 / self.mag_ema, 0.9, 1.1)
                 if abs(new_g - self.g_norm) > 0.004:
-                    self._log("AUTOCAL", "Normalizacion de gravedad x%.3f -> x%.3f" % (self.g_norm, new_g))
+                    self._log("AUTOCAL", "Gravity normalization x%.3f -> x%.3f" % (self.g_norm, new_g))
                     self.g_norm = new_g
 
-        # orientacion
+        # orientation
         if self.need_init and mag_raw > 0.5:
             self.q = q_from_to(vnorm(acc), (0.0, 0.0, 1.0))
             self.need_init = False
-            self._log("FUSION", "Orientacion inicial tomada de la gravedad")
+            self._log("FUSION", "Initial orientation taken from gravity")
         if self.recenter_req:
             self.recenter_req = False
             self.recenter_yaw()
-            self._log("FUSION", "Yaw centrado")
+            self._log("FUSION", "Yaw recentered")
         yaw_f = dps[0] * (-1 if cfg["invert_yaw"] else 1)
         roll_f = dps[1] * (-1 if cfg["invert_roll"] else 1)
         pitch_f = dps[2] * (-1 if cfg["invert_pitch"] else 1)
-        gyro_body = (pitch_f, roll_f, -yaw_f)    # X pitch(+arriba) Y roll(+derecha) Z yaw(+izquierda), gr/s
+        gyro_body = (pitch_f, roll_f, -yaw_f)    # X pitch(+arriba) Y roll(+derecha) Z yaw(+left), deg/s
         if mp:
             gyro_rad = (0.0, 0.0, 0.0) if self.calib_active else vmul(gyro_body, DEG)
             self._fuse(gyro_rad, acc, dt_mp, cfg["accel_gain"])
@@ -566,7 +566,7 @@ class SimRemote:
         lin_g = vsub(qrot(q, acc), (0.0, 0.0, 1.0))
         dyn_body = qrot(qconj(q), lin_g)
 
-        # IR, posicion y puntero
+        # IR, position and pointer
         ir_recent_before = t - self.last_ir_t < 0.5
         still_sec = self.still_count / max(60.0, self.rate)
         self.est.arm = cfg["arm_length"]
@@ -584,12 +584,12 @@ class SimRemote:
                 self.rotate_yaw(-k * phi)
                 if ad > 30 and t - self.last_yaw_log > 5:
                     self.last_yaw_log = t
-                    self._log("FUSION", "Yaw corregido con el IR: el mando estaba %.0f grados fuera del eje de la barra" % ad)
+                    self._log("FUSION", "Yaw corrected with IR: the remote was %.0f degrees off the bar axis" % ad)
                 q = self.q
             reacq = t - self.last_ir_t > 0.5
             self.est.correct_ir(p_ir, dt, reacq)
             if reacq:
-                self._log("IR", "Barra vista: %d puntos, separacion %.0f px, distancia %.2f m" % (info["n"], info["sep"], z))
+                self._log("IR", "Bar seen: %d dots, separation %.0f px, distance %.2f m" % (info["n"], info["sep"], z))
             self.last_ir_t = t
             self.stat["ir"] += 1
             self.ptr_ex, self.ptr_ez, self.ptr_ir_t, self.ptr_has = info["ex"], info["ez"], t, True
@@ -598,7 +598,7 @@ class SimRemote:
             self.ptr_pitch0 = math.asin(wl.clamp(fa[2], -1, 1))
         ir_visible = t - self.last_ir_t < 0.25
         if self.ir_was_visible and not ir_visible:
-            self._log("IR", "Barra perdida: la posicion sigue la orientacion (arco de muneca/brazo)")
+            self._log("IR", "Bar lost: position now follows orientation (wrist/arm arc)")
         self.ir_was_visible = ir_visible
 
         ptr_valid = ptr_est = False
@@ -625,24 +625,24 @@ class SimRemote:
                 nx, ny = self.oe_x.filter(raw_nx, pdt), self.oe_y.filter(raw_ny, pdt)
                 self.ptr_out = (nx, ny)
 
-        # Nunchuk directo
+        # direct Nunchuk
         nun_connected = False
         if nun_frame:
             self._nunchuk(nun_frame, t)
         nun_connected = t - self.last_nun_t < 0.7
 
-        # gestos del mando
+        # remote gestures
         if not self.calib_active:
             self._gesture(self.gest_remote.update_remote(t, dt, dyn_body, gyro_body), t)
         if acc and vlen(acc) > 2.0 or gyro_mag > 250:
             self.burst_until = t + 0.4
 
-        # estadisticas y muestras
+        # statistics and samples
         self.stat["rep"] += 1
         if self.stat_t is None:
             self.stat_t = t
         if t - self.stat_t >= 1.0:
-            self._log("STAT", "informes=%.0f/s mp=%d nunchuk=%d ir=%d pos=(%.2f,%.2f,%.2f) puntero=(%.2f,%.2f)%s" % (
+            self._log("STAT", "reports=%.0f/s mp=%d nunchuk=%d ir=%d pos=(%.2f,%.2f,%.2f) pointer=(%.2f,%.2f)%s" % (
                 self.rate, self.stat["mp"], self.stat["nun"], self.stat["ir"], self.est.pos[0], self.est.pos[1], self.est.pos[2],
                 nx, ny, (" est" if ptr_est else " IR") if ptr_valid else " --"))
             self.stat = {"rep": 0, "mp": 0, "nun": 0, "ir": 0}
@@ -651,7 +651,7 @@ class SimRemote:
         if (self.sample_div & 3) == 0 or t < self.burst_until:
             yaw_d, pitch_d, roll_d = euler(q)
             dots = list(f.ir) + [None] * (4 - len(f.ir))
-            row = [("%.3f" % (self.log.now() if self.log else 0)), self.slot + 1, "MP" if mp else ("NUN" if nun_frame else "OTRO"),
+            row = [("%.3f" % (self.log.now() if self.log else 0)), self.slot + 1, "MP" if mp else ("NUN" if nun_frame else "OTHER"),
                    int(self.last_all_slow), mp[0] if mp else 0, mp[1] if mp else 0, mp[2] if mp else 0,
                    "%.2f" % dps[0], "%.2f" % dps[1], "%.2f" % dps[2], "%.3f" % acc[0], "%.3f" % acc[1], "%.3f" % acc[2], "%.3f" % vlen(acc),
                    "%.4f" % q[0], "%.4f" % q[1], "%.4f" % q[2], "%.4f" % q[3], "%.2f" % yaw_d, "%.2f" % pitch_d, "%.2f" % roll_d,
@@ -665,7 +665,7 @@ class SimRemote:
             if self.log:
                 self.log.sample(",".join(str(x) for x in row))
 
-        # estela
+        # trail
         if self.trail:
             last = self.trail[-1][0]
             if vlen(vsub(self.est.pos, last)) > 0.006:
@@ -704,7 +704,7 @@ class SimRemote:
             nu["sum"][1] += n["sy"]
             if nu["n"] >= 15:
                 nu["center"] = (nu["sum"][0] / nu["n"], nu["sum"][1] / nu["n"])
-                self._log("NUNCHUK", "Centro de la palanca: (%.1f, %.1f)" % nu["center"])
+                self._log("NUNCHUK", "Stick center: (%.1f, %.1f)" % nu["center"])
         cx, cy = nu["center"] if nu["center"] else (131.0, 125.0)
         nu["x"] = wl.clamp((n["sx"] - cx) / 95.0, -1, 1)
         nu["y"] = wl.clamp((n["sy"] - cy) / 95.0, -1, 1)
@@ -714,7 +714,7 @@ class SimRemote:
                 self._log("NUNCHUK", ("+" if n[key] else "-") + key.upper())
             nu[key] = n[key]
         if self.last_nun_t < 0 or t - self.last_nun_t > 1.0:
-            self._log("NUNCHUK", "Datos de Nunchuk recibidos")
+            self._log("NUNCHUK", "Nunchuk data received")
         self.last_nun_t = t
         if self.nun_lp is None:
             self.nun_lp, self.nun_prev_t = n["acc"], t

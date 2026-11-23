@@ -1,5 +1,5 @@
 #!/bin/sh
-# Steam inyecta librerias propias que rompen el python/tk del sistema: se quitan.
+# Steam injects its own libraries that break the system python/tk: remove them.
 unset LD_PRELOAD LD_LIBRARY_PATH PYTHONHOME PYTHONPATH
 HERE="$(dirname "$(readlink -f "$0")")"
 PY="$(command -v /usr/bin/python3 || command -v python3)"

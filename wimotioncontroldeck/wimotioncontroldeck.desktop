@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=WimotionControlDeck
+Comment=Control the Steam Deck (Game Mode) with a Wiimote Plus: IR pointer, assignable buttons, gyro, Nunchuk
+Exec=AppRun
+Icon=wimotioncontroldeck
+Categories=Utility;Game;
+Terminal=false

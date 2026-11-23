@@ -1,7 +1,7 @@
 """
-sim3d - visor 3D por software (sin OpenGL): camara orbital, modelos de mando/Nunchuk/escena, algoritmo del pintor.
-Dibuja sobre una "superficie" (Tk Canvas en la app, PIL en las pruebas). Coordenadas del mundo: X derecha,
-Y adelante (hacia la barra/pantalla), Z arriba; origen = centro de la Dolphin Bar.
+sim3d - software 3D viewer (no OpenGL): orbital camera, remote/Nunchuk/scene models, painter's algorithm.
+Draws onto a "surface" (Tk Canvas in the app, PIL in the tests). World coordinates: X right,
+Y forward (toward the bar/screen), Z up; origin = center of the Dolphin Bar.
 """
 import math
 
@@ -10,7 +10,7 @@ from simcore import vadd, vsub, vmul, vdot, vcross, vnorm, vlen, qrot
 
 SLOT_COLORS = ((63, 169, 245), (245, 90, 63), (76, 217, 100), (255, 204, 0))
 FLOOR_Z = -1.2
-LIGHT = vnorm((0.35, -0.55, 0.85))   # hacia la fuente de luz
+LIGHT = vnorm((0.35, -0.55, 0.85))   # toward the light source
 TV_CENTER = (0.0, 0.0, 0.32)
 TV_HALF = (0.5, 0.29)
 
@@ -19,9 +19,9 @@ def hexcolor(c, k=1.0):
     return "#%02x%02x%02x" % tuple(max(0, min(255, int(v * k))) for v in c)
 
 
-# ----------------------------------------------------------------- mallas
+# ----------------------------------------------------------------- meshes
 def box(cx, cy, cz, sx, sy, sz, color):
-    """Caja como lista de caras (4 vertices, normal, color)."""
+    """Box as a list of faces (4 vertices, normal, color)."""
     x, y, z = sx / 2, sy / 2, sz / 2
     P = lambda dx, dy, dz: (cx + dx, cy + dy, cz + dz)
     return [
@@ -48,7 +48,7 @@ def mmul(R, v):
 
 
 def place(faces, R, t):
-    """Lleva las caras de coordenadas locales a las del mundo."""
+    """Moves faces from local coordinates to world coordinates."""
     out = []
     for verts, n, col in faces:
         out.append(([vadd(mmul(R, v), t) for v in verts], mmul(R, n), col))
@@ -56,7 +56,7 @@ def place(faces, R, t):
 
 
 def remote_faces(buttons, slot, show_axes=True):
-    """Wii Remote centrado en el cuerpo (X derecha, Y adelante, Z arriba)."""
+    """Wii Remote centered on its body (X right, Y forward, Z up)."""
     W, L, H = 0.036, 0.148, 0.031
     top = H / 2
     PRESSED = (255, 214, 10)
@@ -67,10 +67,10 @@ def remote_faces(buttons, slot, show_axes=True):
         return PRESSED if buttons & mask else normal
     f = []
     f += box(0, 0, 0, W, L, H, white)
-    f += box(0, L / 2 + 0.0006, 0, 0.025, 0.0016, 0.013, (30, 10, 16))          # ventana IR
-    f += box(0, 0.056, top + 0.001, 0.008, 0.008, 0.002, silver)                  # encendido
+    f += box(0, L / 2 + 0.0006, 0, 0.025, 0.0016, 0.013, (30, 10, 16))          # IR window
+    f += box(0, 0.056, top + 0.001, 0.008, 0.008, 0.002, silver)                  # power
     dp = PRESSED if buttons & (wl_btn("Left") | wl_btn("Right") | wl_btn("Up") | wl_btn("Down")) else dark
-    f += box(0, 0.040, top + 0.001, 0.0215, 0.0072, 0.0024, dp)                   # cruceta
+    f += box(0, 0.040, top + 0.001, 0.0215, 0.0072, 0.0024, dp)                   # D-pad
     f += box(0, 0.040, top + 0.001, 0.0072, 0.0215, 0.0024, dp)
     f += box(0, 0.019, top + 0.002, 0.016, 0.016, 0.0036, pr(wl_btn("A"), (226, 230, 238)))   # A
     f += box(-0.0115, -0.002, top + 0.001, 0.008, 0.008, 0.002, pr(wl_btn("Minus"), silver))
@@ -78,8 +78,8 @@ def remote_faces(buttons, slot, show_axes=True):
     f += box(0.0115, -0.002, top + 0.001, 0.008, 0.008, 0.002, pr(wl_btn("Plus"), silver))
     f += box(0, -0.031, top + 0.0015, 0.010, 0.010, 0.003, pr(wl_btn("One"), silver))
     f += box(0, -0.0445, top + 0.0015, 0.010, 0.010, 0.003, pr(wl_btn("Two"), silver))
-    f += box(0, 0.020, -top - 0.0016, 0.017, 0.032, 0.0075, pr(wl_btn("B"), gray))          # gatillo B
-    f += box(0, -0.0535, 0, W + 0.001, 0.003, H + 0.001, col)                              # banda del jugador
+    f += box(0, 0.020, -top - 0.0016, 0.017, 0.032, 0.0075, pr(wl_btn("B"), gray))          # B trigger
+    f += box(0, -0.0535, 0, W + 0.001, 0.003, H + 0.001, col)                              # player band
     for i in range(4):
         f += box(-0.0105 + i * 0.007, -0.0645, top + 0.0005, 0.004, 0.004, 0.001, col if i == (slot & 3) else gray)
     if show_axes:
@@ -102,7 +102,7 @@ def nunchuk_faces(slot, stick, c, z):
     f += box(0, 0, 0, W, L, H, (236, 237, 242))
     f += box(0, -0.030, 0, W + 0.001, 0.003, H + 0.001, SLOT_COLORS[slot & 3])
     f += box(0, 0.020, top + 0.0015, 0.026, 0.026, 0.003, (60, 62, 70))
-    # palanca: base y capuchon desplazados segun la inclinacion
+    # stick: base and cap offset according to the tilt
     sx, sy = stick
     tx, ty = sx * 0.012, sy * 0.012
     f += box(tx * 0.5, 0.020 + ty * 0.5, top + 0.009, 0.010, 0.010, 0.012, (70, 72, 80))
@@ -113,7 +113,7 @@ def nunchuk_faces(slot, stick, c, z):
     return f
 
 
-# ----------------------------------------------------------------- camara
+# ----------------------------------------------------------------- camera
 class Camera:
     def __init__(self):
         self.reset()
@@ -149,7 +149,7 @@ class Camera:
         return proj, pos
 
 
-# ----------------------------------------------------------------- superficies
+# ----------------------------------------------------------------- surfaces
 class TkSurface:
     def __init__(self, canvas):
         self.c = canvas
@@ -201,21 +201,21 @@ class PILSurface:
         pass
 
 
-# ----------------------------------------------------------------- escena
+# ----------------------------------------------------------------- scene
 class Scene:
     def __init__(self):
         self.static = self._build_static()
 
     def _build_static(self):
         f = []
-        # mesa y television
+        # table and television
         f += box(0, 0.18, -0.045, 1.5, 0.55, 0.04, (92, 70, 54))
         for lx in (-0.68, 0.68):
             for ly in (-0.04, 0.40):
                 f += box(lx, ly, FLOOR_Z / 2 - 0.03, 0.045, 0.045, -FLOOR_Z - 0.06, (80, 60, 46))
-        f += box(0, 0.032, 0.32, 1.06, 0.036, 0.62, (16, 18, 22))       # marco
-        f += box(0, 0.09, 0.0, 0.18, 0.08, 0.05, (16, 18, 22))          # pie
-        f += box(0, 0.0125, 0.32, 1.0, 0.002, 0.58, (24, 40, 74))       # pantalla
+        f += box(0, 0.032, 0.32, 1.06, 0.036, 0.62, (16, 18, 22))       # frame
+        f += box(0, 0.09, 0.0, 0.18, 0.08, 0.05, (16, 18, 22))          # stand
+        f += box(0, 0.0125, 0.32, 1.0, 0.002, 0.58, (24, 40, 74))       # screen
         # Dolphin Bar
         f += box(0, -0.024, -0.020, 0.26, 0.030, 0.022, (26, 27, 32))
         f += box(-0.105, -0.0405, -0.020, 0.020, 0.003, 0.010, (255, 80, 80))
@@ -231,14 +231,14 @@ class Scene:
         return hexcolor(col, k)
 
     def render(self, surf, w, h, cam, remotes, cfg, hud=None):
-        """remotes: lista de (slot, snapshot) de mandos conectados."""
+        """remotes: list of (slot, snapshot) of connected remotes."""
         proj, cam_pos = cam.projector(w, h)
         surf.begin(w, h, "#0e1521")
 
         def P(p):
             return proj(p)
 
-        # suelo: cuadricula y zona de juego
+        # floor: grid and play area
         for i in range(-8, 9):
             x = i * 0.5
             a, b = P((x, -5.0, FLOOR_Z)), P((x, 2.0, FLOOR_Z))
@@ -275,7 +275,7 @@ class Scene:
                 off = qrot(qyaw, (-0.26, -0.02, -0.06))
                 faces += place(nunchuk_faces(slot, (s["nun"]["x"], s["nun"]["y"]), s["nun"]["c"], s["nun"]["z"]), qmat(qn), vadd(vadd(center, off), (0, 0, 0)))
             col = SLOT_COLORS[slot & 3]
-            # sombra y varilla de altura
+            # shadow and height rod
             sh = []
             for k in range(14):
                 a = k / 14 * 2 * math.pi
@@ -286,7 +286,7 @@ class Scene:
             overlays.append(("stem", P(tip), P((tip[0], tip[1], FLOOR_Z)), col))
             if cfg.get("show_trail", True) and len(s.get("trail", [])) > 1:
                 overlays.append(("trail", [(P(p), ir) for p, ir in s["trail"]], col))
-            # puntero en la pantalla y haz
+            # pointer on the screen and beam
             if s["ptr_valid"] and abs(s["nx"]) < 1.5 and abs(s["ny"]) < 1.5:
                 hit = (TV_CENTER[0] + s["nx"] * TV_HALF[0], 0.011, TV_CENTER[2] + s["ny"] * TV_HALF[1])
                 overlays.append(("pointer", hit, col, s["ptr_est"]))
@@ -300,7 +300,7 @@ class Scene:
                     overlays.append(("ray", P(tip), P(corner), col))
             lp = P(vadd(center, (0, 0, 0.13)))
             if lp:
-                txt = "Mando %d  %s" % (slot + 1, "IR" if s["ir_visible"] else ("EST" if s["ir_ever"] else "--"))
+                txt = "Remote %d  %s" % (slot + 1, "IR" if s["ir_visible"] else ("EST" if s["ir_ever"] else "--"))
                 if s["nun_connected"]:
                     txt += " +Nunchuk"
                 if s["gesture"] and s["gesture_age"] < 1.5:
@@ -313,7 +313,7 @@ class Scene:
             elif kind == "stem" and rest[0] and rest[1]:
                 surf.line(rest[0], rest[1], hexcolor(rest[2], 0.5), 1)
 
-        # polígonos ordenados (algoritmo del pintor) con descarte de caras traseras
+        # sorted polygons (painter's algorithm) with back-face culling
         todraw = []
         for verts, n, col in faces:
             cen = vmul(vadd(vadd(verts[0], verts[1]), vadd(verts[2], verts[3])), 0.25)

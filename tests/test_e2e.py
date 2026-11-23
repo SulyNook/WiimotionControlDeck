@@ -1,4 +1,4 @@
-"""Extremo a extremo: sysfs falso + pty como mando + Manager + DeckController + uinput falso."""
+"""End to end: fake sysfs + pty as the remote + Manager + DeckController + fake uinput."""
 import os, sys, time, tty, threading, tempfile, select, math
 from helpers import *
 import deckcore as wd
@@ -27,7 +27,7 @@ def fake():
             elif msg[0] == 0x12: streaming = True
         if streaming and time.time() - last >= 0.006:
             last = time.time(); i += 1
-            # el mando gira a la derecha 3 grados/s... los puntos se desplazan a la izquierda; A pulsada entre i=400 y 500
+            # the remote turns right 3 degrees/s... the dots shift left; A pressed between i=400 and 500
             shift = round(i * 0.1)
             btn = wl.BTN_A if 400 < i < 500 else 0
             os.write(master, make_report(buttons=btn, dots=[(432 - shift, 384), (592 - shift, 384)]))
@@ -43,8 +43,8 @@ time.sleep(5.0)
 mgr.stop(); stop = True
 wms = len(ctrl.states)
 dx = sum(mouse.where(wd.EV_REL, wd.REL_X)); dy = sum(mouse.where(wd.EV_REL, wd.REL_Y))
-print("mandos con estado:", wms, " mouse dx=%d dy=%d" % (dx, dy), " clics:", mouse.where(wd.EV_KEY, 0x110))
+print("remotes with state:", wms, " mouse dx=%d dy=%d" % (dx, dy), " clicks:", mouse.where(wd.EV_KEY, 0x110))
 print(log.get_tail(6))
 ok = wms == 1 and dx > 20 and abs(dy) < 5 and mouse.where(wd.EV_KEY, 0x110)[:2] == [1, 0]
-print("E2E", "OK" if ok else "FALLA")
+print("E2E", "OK" if ok else "FAIL")
 sys.exit(0 if ok else 1)

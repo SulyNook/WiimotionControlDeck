@@ -1,0 +1,10 @@
+node_modules/
+dist/
+py_modules/
+pkg-decky/
+AppDir*/
+appimagetool
+*.AppImage
+WimotionControlDeck-decky.zip
+__pycache__/
+*.pyc
